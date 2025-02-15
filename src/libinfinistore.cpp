@@ -431,7 +431,7 @@ void Connection::cq_handler() {
             }
         }
         else {
-            // TODO: gracefull shutdown
+            // TODO: graceful shutdown
             if (errno != EINTR) {
                 WARN("Failed to get CQ event {}", strerror(errno));
                 return;
@@ -926,7 +926,7 @@ int Connection::w_rdma_async(unsigned long *p_offsets, size_t offsets_len, int b
 
         wrs[num_wr].opcode = IBV_WR_RDMA_WRITE;
         if (i == remote_blocks_len - 1) {
-            // save all the remote addresses for commiting keys
+            // save all the remote addresses for committing keys
             for (size_t j = 0; j < remote_blocks_len; j++) {
                 info->remote_addrs.push_back(p_remote_blocks[j].remote_addr);
             }

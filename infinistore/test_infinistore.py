@@ -41,7 +41,7 @@ def server():
     server_process.wait()
 
 
-# add a flat to wehther the same connection.
+# add a flat to whether the same connection.
 
 
 def generate_random_string(length):
@@ -124,7 +124,7 @@ def test_batch_read_write_cache(server, seperated_gpu, local):
         infinistore.TYPE_LOCAL_GPU if local else infinistore.TYPE_RDMA
     )
     # test if we have multiple GPUs
-    if seperated_gpu:
+    if separated_gpu:
         if get_gpu_count() >= 2:
             src_device = "cuda:0"
             dst_device = "cuda:1"
