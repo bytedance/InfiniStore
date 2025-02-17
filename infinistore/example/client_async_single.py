@@ -46,7 +46,7 @@ async def main():
     assert not is_exist
     await rdma_conn.rdma_write_cache_single_async(key, 100, get_ptr(src))
 
-    await rdma_conn.read_cache_simple_async(key, get_ptr(dst), 100)
+    await rdma_conn.read_cache_single_async(key, get_ptr(dst), 100)
 
     assert src == dst
 

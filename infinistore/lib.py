@@ -591,7 +591,7 @@ class InfinityConnection:
             raise Exception(f"Failed to read to infinistore, ret = {ret}")
         return await future
 
-    async def read_cache_simple_async(self, key: str, ptr: int, size: int, **kwargs):
+    async def read_cache_single_async(self, key: str, ptr: int, size: int, **kwargs):
         if key == "":
             raise Exception("key is empty")
         if size == 0:
@@ -614,7 +614,7 @@ class InfinityConnection:
 
         return await future
 
-    def read_cache_simple(self, key: str, ptr: int, size: int, **kwargs):
+    def read_cache_single(self, key: str, ptr: int, size: int, **kwargs):
         if key == "":
             raise Exception("key is empty")
         if size == 0:
