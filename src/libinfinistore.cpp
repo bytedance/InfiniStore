@@ -84,8 +84,8 @@ Connection::~Connection() {
     INFO("destroying connection");
 
     if (!stop_ && cq_future_.valid()) {
-        ERROR("user should call close() before destroying connection, segmenation fault may occur");
-        throw std::runtime_error("user should call close() before destroying connection");
+        WARN("user should call close() before destroying connection, segmenation fault may occur");
+        // throw std::runtime_error("user should call close() before destroying connection");
     }
 
     SendBuffer *buffer;
@@ -337,7 +337,7 @@ void Connection::cq_handler() {
                         uint32_t imm_data = ntohl(wc[i].imm_data);
                         INFO("read cache done: Received IMM, imm_data: {}", imm_data);
                         auto *info = reinterpret_cast<rdma_read_commit_info *>(wc[i].wr_id);
-                        info->callback();
+                        info->callback(imm_data);
                         delete info;
                         rdma_inflight_count_--;
                         cv_.notify_all();
@@ -433,7 +433,7 @@ void Connection::cq_handler() {
         else {
             // TODO: gracefull shutdown
             if (errno != EINTR) {
-                ERROR("Failed to get CQ event {}", strerror(errno));
+                WARN("Failed to get CQ event {}", strerror(errno));
                 return;
             }
         }
@@ -1013,11 +1013,15 @@ int Connection::w_rdma_async(unsigned long *p_offsets, size_t offsets_len, int b
 }
 
 int Connection::r_rdma(std::vector<block_t> &blocks, int block_size, void *base_ptr) {
-    return r_rdma_async(blocks, block_size, base_ptr, []() {});
+    return r_rdma_async(blocks, block_size, base_ptr, [](unsigned int code) {
+        if (code != 0) {
+            ERROR("Failed to read cache, error code: {}", code);
+        }
+    });
 }
 
 int Connection::r_rdma_async(std::vector<block_t> &blocks, int block_size, void *base_ptr,
-                             std::function<void()> callback) {
+                             std::function<void(unsigned int code)> callback) {
     assert(base_ptr != NULL);
 
     if (!local_mr_.count((uintptr_t)base_ptr)) {
@@ -1036,7 +1040,7 @@ int Connection::r_rdma_async(std::vector<block_t> &blocks, int block_size, void 
         .lkey = recv_mr_->lkey,
     };
 
-    auto *info = new rdma_read_commit_info([callback]() { callback(); });
+    auto *info = new rdma_read_commit_info([callback](unsigned int code) { callback(code); });
 
     struct ibv_recv_wr recv_wr = {
         .wr_id = (uintptr_t)info,

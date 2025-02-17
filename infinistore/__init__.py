@@ -12,6 +12,8 @@ from .lib import (
     register_server,
     purge_kv_map,
     get_kvmap_len,
+    InfiniStoreException,
+    InfiniStoreKeyNotFound,
 )
 
 __all__ = [
@@ -28,4 +30,6 @@ __all__ = [
     "LINK_IB",
     "purge_kv_map",
     "get_kvmap_len",
+    "InfiniStoreException",
+    "InfiniStoreKeyNotFound",
 ]

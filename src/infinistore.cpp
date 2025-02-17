@@ -240,9 +240,28 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                 INFO("Received remote meta request OP {}", op_name(request->op()));
 
                 switch (request->op()) {
-                    case OP_RDMA_READ:
-                        read_rdma_cache(request);
+                    case OP_RDMA_READ: {
+                        int ret = read_rdma_cache(request);
+                        if (ret != 0) {
+                            // send an error code back
+                            struct ibv_send_wr wr, *bad_wr = NULL;
+                            memset(&wr, 0, sizeof(wr));
+                            wr.wr_id = 1;
+                            wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+                            wr.imm_data = htonl(ret);
+                            wr.send_flags = 0;
+                            wr.wr.rdma.remote_addr = request->remote_addrs()->Get(0);
+                            wr.wr.rdma.rkey = request->rkey();
+                            // FIXME: some RDMA provider may not support NULL sg_list
+                            wr.sg_list = NULL;
+                            wr.num_sge = 0;
+                            int ret = ibv_post_send(qp_, &wr, &bad_wr);
+                            if (ret) {
+                                ERROR("Failed to send WITH_IMM message: {}", ret);
+                            }
+                        }
                         break;
+                    }
                     case OP_RDMA_ALLOCATE: {
                         auto start = std::chrono::high_resolution_clock::now();
                         allocate_rdma(request);
@@ -426,7 +445,7 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
 
     if (remote_meta_req->keys()->size() != remote_meta_req->remote_addrs()->size()) {
         ERROR("keys size and remote_addrs size mismatch");
-        return -1;
+        return INVALID_REQ;
     }
 
     auto *inflight_rdma_reads = new std::vector<boost::intrusive_ptr<PTR>>;
@@ -437,12 +456,12 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         auto it = kv_map.find(key->str());
         if (it == kv_map.end()) {
             ERROR("Key not found: {}", key->str());
-            return -1;
+            return KEY_NOT_FOUND;
         }
 
         if (!it->second->committed) {
             ERROR("Key not committed: {}", key->str());
-            return -1;
+            return KEY_NOT_COMMITED;
         }
 
         const auto &ptr = it->second;
@@ -476,6 +495,7 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         wrs[num_wr].wr_id = 0;
         wrs[num_wr].opcode = (i == remote_meta_req->keys()->size() - 1) ? IBV_WR_RDMA_WRITE_WITH_IMM
                                                                         : IBV_WR_RDMA_WRITE;
+        wrs[num_wr].imm_data = 0;
         wrs[num_wr].sg_list = &sges[num_wr];
         wrs[num_wr].num_sge = 1;
         wrs[num_wr].wr.rdma.remote_addr = remote_meta_req->remote_addrs()->Get(i);

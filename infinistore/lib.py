@@ -19,6 +19,17 @@ LINK_ETHERNET = "Ethernet"
 LINK_IB = "IB"
 
 
+# Define exceptions which can be caught by the client such as KeyNotFound
+
+
+class InfiniStoreException(Exception):
+    pass
+
+
+class InfiniStoreKeyNotFound(InfiniStoreException):
+    pass
+
+
 class ClientConfig(_infinistore.ClientConfig):
     """
     ClientConfig is a configuration class for the Infinistore client.
@@ -563,6 +574,8 @@ class InfinityConnection:
 
         Raises:
             Exception: If RDMA is not connected or if reading from Infinistore fails.
+            Exception: If the tensor is not contiguous.
+
 
         Returns:
             None: This function returns None but completes the future when the read operation is done.
@@ -577,8 +590,18 @@ class InfinityConnection:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        def _callback():
-            loop.call_soon_threadsafe(future.set_result, 0)
+        def _callback(code):
+            if code == 404:
+                loop.call_soon_threadsafe(
+                    future.set_exception, InfiniStoreKeyNotFound("some keys not found")
+                )
+            elif code != 0:
+                loop.call_soon_threadsafe(
+                    future.set_exception,
+                    Exception(f"Failed to read to infinistore, ret = {code}"),
+                )
+            else:
+                loop.call_soon_threadsafe(future.set_result, code)
 
         ret = self.conn.r_rdma_async(
             blocks_in_bytes,
@@ -604,8 +627,18 @@ class InfinityConnection:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        def _callback():
-            loop.call_soon_threadsafe(future.set_result, 0)
+        def _callback(code):
+            if code == 404:
+                loop.call_soon_threadsafe(
+                    future.set_exception, InfiniStoreKeyNotFound(f"Key {key} not found")
+                )
+            elif code != 0:
+                loop.call_soon_threadsafe(
+                    future.set_exception,
+                    Exception(f"Failed to read to infinistore, ret = {code}"),
+                )
+            else:
+                loop.call_soon_threadsafe(future.set_result, code)
 
         ret = self.conn.r_rdma_async([(key, 0)], size, ptr, _callback)
 

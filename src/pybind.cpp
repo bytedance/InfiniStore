@@ -100,15 +100,12 @@ PYBIND11_MODULE(_infinistore, m) {
         .def(
             "r_rdma_async",
             [](Connection &self, const std::vector<std::tuple<std::string, unsigned long>> &blocks,
-               int block_size, uintptr_t ptr, std::function<void()> callback) {
+               int block_size, uintptr_t ptr, std::function<void(unsigned int)> callback) {
                 std::vector<block_t> c_blocks;
                 for (const auto &block : blocks) {
                     c_blocks.push_back(block_t{std::get<0>(block), std::get<1>(block)});
                 }
-                return self.r_rdma_async(c_blocks, block_size, (void *)ptr, [callback]() {
-                    // python code will take_gil by itself
-                    callback();
-                });
+                return self.r_rdma_async(c_blocks, block_size, (void *)ptr, callback);
             },
             py::call_guard<py::gil_scoped_release>(), "Read remote memory asynchronously")
 
