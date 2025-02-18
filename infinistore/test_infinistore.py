@@ -453,7 +453,7 @@ def test_single_async_api(server):
 
         await asyncio.to_thread(register_mr)
 
-        await conn.rdma_write_cache_single_async(key, 4096 * 4, src.data_ptr())
+        await conn.rdma_write_cache_single_async(key, src.data_ptr(), 4096 * 4)
 
         await conn.read_cache_single_async(key, dst.data_ptr(), 4096 * 4)
 

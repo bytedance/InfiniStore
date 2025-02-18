@@ -368,7 +368,7 @@ class InfinityConnection:
                 raise Exception("Failed to setup RDMA connection")
             self.rdma_connected = True
 
-    def local_gpu_write_cache_single(self, key: str, size: int, ptr: int, **kwargs):
+    def local_gpu_write_cache_single(self, key: str, ptr: int, size: int, **kwargs):
         if not self.local_connected:
             raise Exception("this function is only valid for connected local GPU")
         if key == "":
@@ -471,7 +471,7 @@ class InfinityConnection:
         return await future
 
     async def rdma_write_cache_single_async(
-        self, key: str, size: int, ptr: int, **kwargs
+        self, key: str, ptr: int, size: int, **kwargs
     ):
         if not self.rdma_connected:
             raise Exception("this function is only valid for connected rdma")
@@ -496,7 +496,7 @@ class InfinityConnection:
 
         return await future
 
-    def rdma_write_cache_single(self, key: str, size: int, ptr: int, **kwargs):
+    def rdma_write_cache_single(self, key: str, ptr: int, size: int, **kwargs):
         if key == "":
             raise Exception("key is empty")
         if size == 0:

@@ -881,12 +881,13 @@ int Connection::w_rdma_async(unsigned long *p_offsets, size_t offsets_len, int b
     assert(p_remote_blocks != NULL);
     assert(offsets_len == remote_blocks_len);
 
+    INFO("w_rdma, block_size: {}, base_ptr: {}", block_size, base_ptr);
+
     if (!local_mr_.count((uintptr_t)base_ptr)) {
-        ERROR("Please register memory first");
+        ERROR("Please register memory first {}", (uint64_t)base_ptr);
         return -1;
     }
 
-    INFO("w_rdma, block_size: {}, base_ptr: {}", block_size, base_ptr);
     struct ibv_mr *mr = local_mr_[(uintptr_t)base_ptr];
 
     std::unique_lock<std::mutex> lock(rdma_post_send_mutex_);

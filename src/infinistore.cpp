@@ -455,12 +455,12 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
     for (const auto *key : *remote_meta_req->keys()) {
         auto it = kv_map.find(key->str());
         if (it == kv_map.end()) {
-            ERROR("Key not found: {}", key->str());
+            WARN("Key not found: {}", key->str());
             return KEY_NOT_FOUND;
         }
 
         if (!it->second->committed) {
-            ERROR("Key not committed: {}", key->str());
+            WARN("Key not committed: {}", key->str());
             return KEY_NOT_COMMITED;
         }
 

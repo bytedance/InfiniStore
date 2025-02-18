@@ -44,7 +44,7 @@ async def main():
 
     is_exist = await asyncio.to_thread(rdma_conn.check_exist, key)
     assert not is_exist
-    await rdma_conn.rdma_write_cache_single_async(key, 100, get_ptr(src))
+    await rdma_conn.rdma_write_cache_single_async(key, get_ptr(src), 100)
 
     try:
         await rdma_conn.read_cache_single_async(key, get_ptr(dst), 100)
