@@ -9,7 +9,20 @@ import random
 import string
 import contextlib
 import asyncio
+import json
 from multiprocessing import Process
+
+
+RDMA_DEV = []
+
+
+# Fixture to set RDMA_DEV before running tests
+@pytest.fixture(scope="session", autouse=True)
+def set_rdma_dev():
+    global RDMA_DEV
+    RDMA_DEV = get_active_rdma_devices()
+    assert len(RDMA_DEV) > 0  # At least one RDMA device should be active
+    print(f"Active RDMA devices: {RDMA_DEV}")
 
 
 # Fixture to start the TCzpserver before running tests
@@ -21,7 +34,7 @@ def server():
             "-m",
             "infinistore.server",
             "--dev-name",
-            "mlx5_2",
+            f"{RDMA_DEV[0]}",
             "--link-type",
             "Ethernet",
             "--service-port",
@@ -50,6 +63,30 @@ def generate_random_string(length):
     return random_string
 
 
+def get_active_rdma_devices():
+    try:
+        result = subprocess.run(
+            ["rdma", "link", "-j"], capture_output=True, text=True, check=True
+        )
+        output = result.stdout
+
+        active_devices = []
+        devices = json.loads(output)
+        for device in devices:
+            if device["state"] == "ACTIVE":
+                ifname = device["ifname"].split("/")[0]  # Extract mlx5_X part only
+                if ifname not in active_devices:
+                    active_devices.append(ifname)
+
+        return active_devices
+    except subprocess.CalledProcessError as e:
+        print(f"Error while executing command: {e}")
+        return []
+    except json.JSONDecodeError as e:
+        print(f"Error while parsing JSON: {e}")
+        return []
+
+
 def get_gpu_count():
     if torch.cuda.is_available():
         gpu_count = torch.cuda.device_count()
@@ -66,7 +103,7 @@ def test_basic_read_write_cache(server, dtype, new_connection, local):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="mlx5_2",
+        dev_name=f"{RDMA_DEV[0]}",
     )
 
     config.connection_type = (
@@ -117,7 +154,7 @@ def test_batch_read_write_cache(server, separated_gpu, local):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="mlx5_2",
+        dev_name="RDMA_DEV[0]",
     )
 
     config.connection_type = (
@@ -186,7 +223,7 @@ def test_multiple_clients(num_clients, local):
             host_addr="127.0.0.1",
             service_port=92345,
             link_type=infinistore.LINK_ETHERNET,
-            dev_name="mlx5_2",
+            dev_name=f"{RDMA_DEV[0]}",
         )
 
         config.connection_type = (
@@ -243,7 +280,7 @@ def test_key_check(server):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="mlx5_2",
+        dev_name="RDMA_DEV[0]",
         connection_type=infinistore.TYPE_RDMA,
     )
     conn = infinistore.InfinityConnection(config)
@@ -266,7 +303,7 @@ def test_get_match_last_index(server):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="mlx5_2",
+        dev_name="RDMA_DEV[0]",
         connection_type=infinistore.TYPE_RDMA,
     )
     conn = infinistore.InfinityConnection(config)
@@ -287,7 +324,7 @@ def test_key_not_found(server):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="mlx5_2",
+        dev_name="RDMA_DEV[0]",
         connection_type=infinistore.TYPE_LOCAL_GPU,
     )
     conn = infinistore.InfinityConnection(config)
@@ -306,7 +343,7 @@ def test_upload_cpu_download_gpu(server):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="mlx5_0",
+        dev_name=f"{RDMA_DEV[0]}",
         connection_type=infinistore.TYPE_RDMA,
     )
     dst_config = infinistore.ClientConfig(
@@ -342,7 +379,7 @@ def test_deduplicate(server, local):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="mlx5_2",
+        dev_name="RDMA_DEV[0]",
     )
 
     config.connection_type = (
@@ -403,7 +440,7 @@ def test_async_api(server):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="mlx5_0",
+        dev_name=f"{RDMA_DEV[0]}",
         connection_type=infinistore.TYPE_RDMA,
     )
     conn = infinistore.InfinityConnection(config)
@@ -434,7 +471,7 @@ def test_single_async_api(server):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="mlx5_0",
+        dev_name=f"{RDMA_DEV[0]}",
         connection_type=infinistore.TYPE_RDMA,
     )
 
@@ -473,7 +510,7 @@ def test_benchmark(server):
             "--service-port",
             "92345",
             "--dev-name",
-            "mlx5_0",
+            f"{RDMA_DEV[0]}",
             "--link-type",
             "Ethernet",
             "--size",

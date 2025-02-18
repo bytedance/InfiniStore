@@ -461,7 +461,7 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
 
         if (!it->second->committed) {
             WARN("Key not committed: {}", key->str());
-            return KEY_NOT_COMMITED;
+            return KEY_NOT_COMMITTED;
         }
 
         const auto &ptr = it->second;

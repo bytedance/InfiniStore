@@ -60,7 +60,7 @@ std::string op_name(char op);
 #define SYSTEM_ERROR 503
 #define OUT_OF_MEMORY 507
 
-#define KEY_NOT_COMMITED 409
+#define KEY_NOT_COMMITTED 409
 
 #define RETURN_CODE_SIZE sizeof(int)
 
