@@ -110,9 +110,9 @@ def test_basic_read_write_cache(server, dtype, new_connection, local):
     conn.close()
 
 
-@pytest.mark.parametrize("seperated_gpu", [False, True])
+@pytest.mark.parametrize("separated_gpu", [False, True])
 @pytest.mark.parametrize("local", [False, True])
-def test_batch_read_write_cache(server, seperated_gpu, local):
+def test_batch_read_write_cache(server, separated_gpu, local):
     config = infinistore.ClientConfig(
         host_addr="127.0.0.1",
         service_port=92345,

@@ -369,6 +369,27 @@ class InfinityConnection:
             self.rdma_connected = True
 
     def local_gpu_write_cache_single(self, key: str, ptr: int, size: int, **kwargs):
+        """
+        Writes data to the local GPU cache.
+
+        This function writes data to the local GPU cache using the provided key, pointer, and size.
+        It requires a connected local GPU and a valid device ID.
+
+        Args:
+            key (str): The key associated with the data to be written.
+            ptr (int): The pointer to the data in memory.
+            size (int): The size of the data to be written.
+            **kwargs: Additional keyword arguments.
+                device_id (int): The ID of the GPU device to use.
+
+        Raises:
+            Exception: If the local GPU is not connected.
+            Exception: If the key is empty.
+            Exception: If the size is 0.
+            Exception: If the pointer is 0.
+            Exception: If the device_id is not provided in kwargs.
+            Exception: If writing to infinistore fails.
+        """
         if not self.local_connected:
             raise Exception("this function is only valid for connected local GPU")
         if key == "":
@@ -473,6 +494,28 @@ class InfinityConnection:
     async def rdma_write_cache_single_async(
         self, key: str, ptr: int, size: int, **kwargs
     ):
+        """
+        Asynchronously writes data to the RDMA cache.
+
+        This function writes data to the RDMA cache using the provided key, pointer, and size.
+        It ensures that the RDMA connection is established and the input parameters are valid.
+
+        Args:
+            key (str): The key associated with the data to be written.
+            ptr (int): The memory address of the data to be written.
+            size (int): The size of the data to be written.
+            **kwargs: Additional keyword arguments.
+
+        Raises:
+            Exception: If the RDMA connection is not established.
+            Exception: If the key is empty.
+            Exception: If the size is 0.
+            Exception: If the pointer is 0.
+            Exception: If writing to Infinistore fails.
+
+        Returns:
+            int: A future that resolves to 0 upon successful completion of the write operation.
+        """
         if not self.rdma_connected:
             raise Exception("this function is only valid for connected rdma")
         if key == "":
@@ -497,6 +540,24 @@ class InfinityConnection:
         return await future
 
     def rdma_write_cache_single(self, key: str, ptr: int, size: int, **kwargs):
+        """
+        Perform an RDMA write operation to cache a single item in the remote memory.
+
+        Args:
+            key (str): The key associated with the data to be written.
+            ptr (int): The local memory pointer to the data to be written.
+            size (int): The size of the data to be written.
+            **kwargs: Additional keyword arguments.
+
+        Raises:
+            Exception: If the key is empty.
+            Exception: If the size is 0.
+            Exception: If the ptr is 0.
+            Exception: If the RDMA write operation fails.
+
+        Returns:
+            None
+        """
         if key == "":
             raise Exception("key is empty")
         if size == 0:
@@ -615,6 +676,26 @@ class InfinityConnection:
         return await future
 
     async def read_cache_single_async(self, key: str, ptr: int, size: int, **kwargs):
+        """
+        Asynchronously reads a single cache entry from the InfiniStore.
+
+        Args:
+            key (str): The key of the cache entry to read.
+            ptr (int): The pointer to the memory location where the data should be read.
+            size (int): The size of the data to read.
+            **kwargs: Additional keyword arguments.
+
+        Raises:
+            Exception: If the key is empty.
+            Exception: If the size is 0.
+            Exception: If the ptr is 0.
+            Exception: If async read for local GPU is not supported.
+            InfiniStoreKeyNotFound: If the key is not found in the InfiniStore.
+            Exception: If there is a failure in reading from the InfiniStore.
+
+        Returns:
+            int: The result code of the read operation.
+        """
         if key == "":
             raise Exception("key is empty")
         if size == 0:
@@ -648,6 +729,26 @@ class InfinityConnection:
         return await future
 
     def read_cache_single(self, key: str, ptr: int, size: int, **kwargs):
+        """
+        Reads a single cache entry from the infinistore.
+
+        Parameters:
+        key (str): The key of the cache entry to read.
+        ptr (int): The pointer to the memory location where the data should be read.
+        size (int): The size of the data to read.
+        kwargs: Additional keyword arguments.
+
+        Keyword Arguments:
+        device_id (int): The ID of the device to use for local GPU connection (required if local_connected is True).
+
+        Raises:
+        Exception: If the key is empty.
+        Exception: If the size is 0.
+        Exception: If the ptr is 0.
+        Exception: If device_id is not provided when local_connected is True.
+        Exception: If not connected to any instance.
+        Exception: If the read operation fails.
+        """
         if key == "":
             raise Exception("key is empty")
         if size == 0:
@@ -805,22 +906,34 @@ class InfinityConnection:
 
     @singledispatchmethod
     def register_mr(self, arg: Union[torch.Tensor, int], size: Optional[int] = None):
+        """
+        Registers a memory region (MR) for the given argument.
+
+        Args:
+            arg (Union[torch.Tensor, int]): The argument for which the memory region is to be registered.
+                It can be either a torch.Tensor or an pointer.
+            size (Optional[int], optional): The size of the memory region to be registered. Defaults to None.
+
+        Raises:
+            NotImplementedError: If the type of the argument is not supported.
+        """
         raise NotImplementedError(f"not supported: {type(arg)}")
 
     @register_mr.register
     def _(self, ptr: int, size):
         """
-        Registers a memory region for RDMA (Remote Direct Memory Access) operations.
+        Registers a memory region (MR) for an integer pointer.
 
         Args:
             ptr (int): The pointer to the memory region.
             size (int): The size of the memory region.
 
-        Returns:
-            int: A positive integer indicating the registration was successful.
-
         Raises:
-            Exception: If RDMA is not connected or if the memory region registration fails.
+            Exception: If the RDMA connection is not established.
+            Exception: If the memory region registration fails.
+
+        Returns:
+            int: The result of the memory region registration.
         """
         if not self.rdma_connected:
             raise Exception("this function is only valid for connected rdma")
@@ -833,16 +946,18 @@ class InfinityConnection:
     @register_mr.register
     def _(self, cache: torch.Tensor, size: Optional[int] = None):
         """
-        Registers a memory region for RDMA (Remote Direct Memory Access) operations.
+        Registers a memory region (MR) for a torch.Tensor.
 
         Args:
-            cache (torch.Tensor): The tensor whose memory region is to be registered.
-
-        Returns:
-            int: A positive integer indicating the registration was successful.
+            cache (torch.Tensor): The tensor for which the memory region is to be registered.
+            size (Optional[int], optional): The size of the memory region. Defaults to None.
 
         Raises:
-            Exception: If RDMA is not connected or if the memory region registration fails.
+            Exception: If the RDMA connection is not established.
+            Exception: If the memory region registration fails.
+
+        Returns:
+            int: The result of the memory region registration.
         """
         self._verify(cache)
         ptr = cache.data_ptr()
@@ -856,6 +971,23 @@ class InfinityConnection:
         return ret
 
     async def allocate_rdma_async(self, keys: List[str], page_size_in_bytes: int):
+        """
+        Asynchronously allocate RDMA (Remote Direct Memory Access) resources for the given keys.
+
+        This function initiates an asynchronous RDMA allocation request and returns a future
+        that will be completed when the allocation is done. The allocation is performed by
+        invoking a callback function from the C++ code.
+
+        Args:
+            keys (List[str]): A list of keys for which RDMA resources are to be allocated.
+            page_size_in_bytes (int): The size of each page in bytes.
+
+        Raises:
+            Exception: If the RDMA connection is not established.
+
+        Returns:
+            Awaitable: A future that will be set with the remote addresses once the allocation is complete.
+        """
         if not self.rdma_connected:
             raise Exception("this function is only valid for connected rdma")
 

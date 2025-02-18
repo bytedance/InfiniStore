@@ -9,6 +9,8 @@
 
 import sys
 import os
+from unittest.mock import MagicMock
+
 
 sys.path.insert(0, os.path.abspath("../.."))
 
@@ -22,10 +24,15 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
 ]
-autodoc_mock_imports = [
-    "infinistore._infinistore",
-    "torch",
-]
+
+mock_torch = MagicMock(name="torch")
+mock_tensor = MagicMock(name="torch.Tensor")
+mock__infinistore = MagicMock(name="infinistore._infinistore")
+
+sys.modules["torch"] = mock_torch
+sys.modules["torch.Tensor"] = mock_tensor
+sys.modules["infinistore._infinistore"] = mock__infinistore
+
 
 templates_path = ["_templates"]
 exclude_patterns = []
