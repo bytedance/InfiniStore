@@ -25,13 +25,25 @@ extensions = [
     "sphinx.ext.napoleon",
 ]
 
-mock_torch = MagicMock(name="torch")
-mock_tensor = MagicMock(name="torch.Tensor")
-mock__infinistore = MagicMock(name="infinistore._infinistore")
 
+mock_torch = MagicMock(name="torch")
+mock_tensor_class = type("Tensor", (object,), {"__module__": "torch"})
+
+mock_torch.Tensor = mock_tensor_class
 sys.modules["torch"] = mock_torch
-sys.modules["torch.Tensor"] = mock_tensor
+
+mock__infinistore = MagicMock(name="infinistore._infinistore")
 sys.modules["infinistore._infinistore"] = mock__infinistore
+
+
+def skip_member(app, what, name, obj, skip, options):
+    if name in ["get_kvmap_len", "purge_kv_map", "register_server"]:
+        return True
+    return skip
+
+
+def setup(app):
+    app.connect("autodoc-skip-member", skip_member)
 
 
 templates_path = ["_templates"]
@@ -40,5 +52,4 @@ exclude_patterns = []
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "alabaster"
-html_static_path = ["_static"]
+html_theme = "sphinx_rtd_theme"

@@ -1,6 +1,6 @@
 [![Run pre-commit checks](https://github.com/bd-iaas-us/infiniStore/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/bd-iaas-us/infiniStore/actions/workflows/pre-commit.yml)
 [![Slack](https://img.shields.io/badge/Slack-Join%20Us-blue?logo=slack)](https://vllm-dev.slack.com/archives/C07VCUQLE1F)
-[![Docs](https://img.shields.io/badge/docs-available-brightgreen)](https://bd-iaas-us.github.io/infiniStore/)
+[![Docs](https://img.shields.io/badge/docs-available-brightgreen)](https://bd-iaas-us.github.io/InfiniStore/)
 
 
 ## pre-required
