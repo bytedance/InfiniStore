@@ -500,6 +500,33 @@ def test_single_async_api(server):
     asyncio.run(run())
 
 
+def test_read_non_exist_key(server):
+    config = infinistore.ClientConfig(
+        host_addr="127.0.0.1",
+        service_port=92345,
+        link_type=infinistore.LINK_ETHERNET,
+        dev_name=f"{RDMA_DEV[0]}",
+        connection_type=infinistore.TYPE_RDMA,
+    )
+
+    async def run():
+        conn = infinistore.InfinityConnection(config)
+        try:
+            await conn.connect_async()
+            dst = torch.zeros(4096, device="cuda", dtype=torch.float32)
+            await asyncio.to_thread(conn.register_mr, dst)
+            with pytest.raises(infinistore.InfiniStoreKeyNotFound):
+                await conn.read_cache_async(dst, [("non_exist_key", 0)], 4096)
+            with pytest.raises(infinistore.InfiniStoreKeyNotFound):
+                await conn.read_cache_single_async(
+                    "non_exist_key", dst.data_ptr(), 4096 * 4
+                )
+        finally:
+            conn.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.benchmark
 def test_benchmark(server):
     current_dir = os.path.dirname(os.path.abspath(__file__))

@@ -124,91 +124,93 @@ def run(args):
     )
 
     conn = infinistore.InfinityConnection(config)
-    conn.connect()
+    try:
+        conn.connect()
 
-    src_device = "cuda:" + str(args.src_gpu)
-    dst_device = "cuda:" + str(args.dst_gpu)
+        src_device = "cuda:" + str(args.src_gpu)
+        dst_device = "cuda:" + str(args.dst_gpu)
 
-    block_size = args.block_size * 1024 // 4
-    num_of_blocks = args.size * 1024 * 1024 // (args.block_size * 1024)
+        block_size = args.block_size * 1024 // 4
+        num_of_blocks = args.size * 1024 * 1024 // (args.block_size * 1024)
 
-    with infinistore.DisableTorchCaching():
-        src_tensor = torch.rand(
-            num_of_blocks * block_size, device=src_device, dtype=torch.float32
-        )
+        with infinistore.DisableTorchCaching():
+            src_tensor = torch.rand(
+                num_of_blocks * block_size, device=src_device, dtype=torch.float32
+            )
 
-    with infinistore.DisableTorchCaching():
-        dst_tensor = torch.rand(
-            num_of_blocks * block_size, device=dst_device, dtype=torch.float32
-        )
+        with infinistore.DisableTorchCaching():
+            dst_tensor = torch.rand(
+                num_of_blocks * block_size, device=dst_device, dtype=torch.float32
+            )
 
-    torch.cuda.synchronize(src_tensor.device)
-    torch.cuda.synchronize(dst_tensor.device)
-    if args.rdma:
-        conn.register_mr(src_tensor)
-        conn.register_mr(dst_tensor)
-
-    # blocks = [(keys[i], offset_blocks[i]) for i in range(num_of_blocks)]
-    write_sum = 0.0
-    read_sum = 0.0
-
-    for _ in range(args.iteration):
-        keys = [generate_uuid() for i in range(num_of_blocks)]
-        offset_blocks = [i * block_size for i in range(num_of_blocks)]
-        # zip keys and offset_blocks
-        blocks = list(zip(keys, offset_blocks))
-
+        torch.cuda.synchronize(src_tensor.device)
+        torch.cuda.synchronize(dst_tensor.device)
         if args.rdma:
-            remote_addrs = conn.allocate_rdma(keys, block_size * 4)
+            conn.register_mr(src_tensor)
+            conn.register_mr(dst_tensor)
 
-        steps = args.steps
-        # simulate we have <steps> layers, this steps should be less then MAX_WR_SIZE
-        while len(blocks) % steps != 0 and steps > 1:
-            steps = int(steps / 2)
-        print(f"\nSimulate {steps} layers, running\n")
-        # how many blocks to write in each step
-        n = int(len(blocks) / steps)
+        # blocks = [(keys[i], offset_blocks[i]) for i in range(num_of_blocks)]
+        write_sum = 0.0
+        read_sum = 0.0
 
-        start = time.time()
+        for _ in range(args.iteration):
+            keys = [generate_uuid() for i in range(num_of_blocks)]
+            offset_blocks = [i * block_size for i in range(num_of_blocks)]
+            # zip keys and offset_blocks
+            blocks = list(zip(keys, offset_blocks))
 
-        for i in range(steps):
             if args.rdma:
-                conn.rdma_write_cache(
-                    src_tensor,
-                    offset_blocks[i * n : i * n + n],
-                    block_size,
-                    remote_addrs[i * n : i * n + n],
-                )
-            else:
-                conn.local_gpu_write_cache(
-                    src_tensor, blocks[i * n : i * n + n], block_size
-                )
-        conn.sync()
-        # print(f"write  takes {time.time() - start} seconds")
+                remote_addrs = conn.allocate_rdma(keys, block_size * 4)
 
-        mid = time.time()
-        write_sum += mid - start
-        for i in range(steps):
-            conn.read_cache(dst_tensor, blocks[i * n : i * n + n], block_size)
+            steps = args.steps
+            # simulate we have <steps> layers, this steps should be less then MAX_WR_SIZE
+            while len(blocks) % steps != 0 and steps > 1:
+                steps = int(steps / 2)
+            print(f"\nSimulate {steps} layers, running\n")
+            # how many blocks to write in each step
+            n = int(len(blocks) / steps)
 
-        conn.sync()
-        end = time.time()
-        read_sum += end - mid
+            start = time.time()
 
-    print(
-        "size: {} MB, block size: {} KB, connection type: {}".format(
-            args.size * args.iteration, args.block_size, config.connection_type
+            for i in range(steps):
+                if args.rdma:
+                    conn.rdma_write_cache(
+                        src_tensor,
+                        offset_blocks[i * n : i * n + n],
+                        block_size,
+                        remote_addrs[i * n : i * n + n],
+                    )
+                else:
+                    conn.local_gpu_write_cache(
+                        src_tensor, blocks[i * n : i * n + n], block_size
+                    )
+            conn.sync()
+            # print(f"write  takes {time.time() - start} seconds")
+
+            mid = time.time()
+            write_sum += mid - start
+            for i in range(steps):
+                conn.read_cache(dst_tensor, blocks[i * n : i * n + n], block_size)
+
+            conn.sync()
+            end = time.time()
+            read_sum += end - mid
+
+        print(
+            "size: {} MB, block size: {} KB, connection type: {}".format(
+                args.size * args.iteration, args.block_size, config.connection_type
+            )
         )
-    )
-    print(
-        "write cache: {:.2f} MB/s, read cache: {:.2f} MB/s".format(
-            args.size * args.iteration / write_sum,
-            args.size * args.iteration / read_sum,
+        print(
+            "write cache: {:.2f} MB/s, read cache: {:.2f} MB/s".format(
+                args.size * args.iteration / write_sum,
+                args.size * args.iteration / read_sum,
+            )
         )
-    )
 
-    assert torch.equal(src_tensor.cpu(), dst_tensor.cpu())
-    conn.close()
+        assert torch.equal(src_tensor.cpu(), dst_tensor.cpu())
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
