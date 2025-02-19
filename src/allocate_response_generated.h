@@ -29,13 +29,18 @@ FLATBUFFERS_STRUCT_END(RemoteBlock, 16);
 
 struct RdmaAllocateResponse FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
     typedef RdmaAllocateResponseBuilder Builder;
-    enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE { VT_BLOCKS = 4 };
+    enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+        VT_BLOCKS = 4,
+        VT_ERROR_CODE = 6
+    };
     const flatbuffers::Vector<const RemoteBlock *> *blocks() const {
         return GetPointer<const flatbuffers::Vector<const RemoteBlock *> *>(VT_BLOCKS);
     }
+    uint32_t error_code() const { return GetField<uint32_t>(VT_ERROR_CODE, 0); }
     bool Verify(flatbuffers::Verifier &verifier) const {
         return VerifyTableStart(verifier) && VerifyOffset(verifier, VT_BLOCKS) &&
-               verifier.VerifyVector(blocks()) && verifier.EndTable();
+               verifier.VerifyVector(blocks()) && VerifyField<uint32_t>(verifier, VT_ERROR_CODE) &&
+               verifier.EndTable();
     }
 };
 
@@ -45,6 +50,9 @@ struct RdmaAllocateResponseBuilder {
     flatbuffers::uoffset_t start_;
     void add_blocks(flatbuffers::Offset<flatbuffers::Vector<const RemoteBlock *>> blocks) {
         fbb_.AddOffset(RdmaAllocateResponse::VT_BLOCKS, blocks);
+    }
+    void add_error_code(uint32_t error_code) {
+        fbb_.AddElement<uint32_t>(RdmaAllocateResponse::VT_ERROR_CODE, error_code, 0);
     }
     explicit RdmaAllocateResponseBuilder(flatbuffers::FlatBufferBuilder &_fbb) : fbb_(_fbb) {
         start_ = fbb_.StartTable();
@@ -58,16 +66,19 @@ struct RdmaAllocateResponseBuilder {
 
 inline flatbuffers::Offset<RdmaAllocateResponse> CreateRdmaAllocateResponse(
     flatbuffers::FlatBufferBuilder &_fbb,
-    flatbuffers::Offset<flatbuffers::Vector<const RemoteBlock *>> blocks = 0) {
+    flatbuffers::Offset<flatbuffers::Vector<const RemoteBlock *>> blocks = 0,
+    uint32_t error_code = 0) {
     RdmaAllocateResponseBuilder builder_(_fbb);
+    builder_.add_error_code(error_code);
     builder_.add_blocks(blocks);
     return builder_.Finish();
 }
 
 inline flatbuffers::Offset<RdmaAllocateResponse> CreateRdmaAllocateResponseDirect(
-    flatbuffers::FlatBufferBuilder &_fbb, const std::vector<RemoteBlock> *blocks = nullptr) {
+    flatbuffers::FlatBufferBuilder &_fbb, const std::vector<RemoteBlock> *blocks = nullptr,
+    uint32_t error_code = 0) {
     auto blocks__ = blocks ? _fbb.CreateVectorOfStructs<RemoteBlock>(*blocks) : 0;
-    return CreateRdmaAllocateResponse(_fbb, blocks__);
+    return CreateRdmaAllocateResponse(_fbb, blocks__, error_code);
 }
 
 inline const RdmaAllocateResponse *GetRdmaAllocateResponse(const void *buf) {

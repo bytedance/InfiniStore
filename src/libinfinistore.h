@@ -105,8 +105,9 @@ class Connection {
                      std::function<void()> callback);
     int sync_rdma();
     std::vector<remote_block_t> *allocate_rdma(std::vector<std::string> &keys, int block_size);
-    int allocate_rdma_async(std::vector<std::string> &keys, int block_size,
-                            std::function<void(std::vector<remote_block_t> *)> callback);
+    int allocate_rdma_async(
+        std::vector<std::string> &keys, int block_size,
+        std::function<void(std::vector<remote_block_t> *, unsigned int error_code)> callback);
     int check_exist(std::string key);
     int get_match_last_index(std::vector<std::string>);
     int register_mr(void *base_ptr, size_t ptr_region_size);

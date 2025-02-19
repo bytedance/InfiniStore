@@ -994,10 +994,16 @@ class InfinityConnection:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
-        def _callback(remote_addrs):
+        def _callback(remote_addrs, error_code):
             # _callback is invoked by the C++ code in cq_thread,
             # so we need to call_soon_threadsafe
-            loop.call_soon_threadsafe(future.set_result, remote_addrs)
+            if error_code != 200:
+                loop.call_soon_threadsafe(
+                    future.set_exception,
+                    Exception("allocate memory failed, error code: " + str(error_code)),
+                )
+            else:
+                loop.call_soon_threadsafe(future.set_result, remote_addrs)
 
         self.conn.allocate_rdma_async(keys, page_size_in_bytes, _callback)
 

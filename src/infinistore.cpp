@@ -363,6 +363,7 @@ int Client::allocate_rdma(const RemoteMetaRequest *req) {
     std::vector<RemoteBlock> blocks;
     blocks.reserve(req->keys()->size());
 
+    unsigned int error_code = FINISH;
     if (!mm->allocate(block_size, req->keys()->size(),
                       [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
                           // FIXME: rdma write should have a msg to update committed to true
@@ -391,10 +392,11 @@ int Client::allocate_rdma(const RemoteMetaRequest *req) {
                           key_idx++;
                       })) {
         ERROR("Failed to allocate memory");
-        return SYSTEM_ERROR;
+        error_code = OUT_OF_MEMORY;
+        blocks.clear();
     }
 
-    auto resp = CreateRdmaAllocateResponseDirect(builder, &blocks);
+    auto resp = CreateRdmaAllocateResponseDirect(builder, &blocks, error_code);
     builder.Finish(resp);
 
     // send RDMA request

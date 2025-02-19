@@ -6,5 +6,6 @@ struct RemoteBlock {
 
 table RdmaAllocateResponse {
   blocks: [RemoteBlock];
+  error_code: uint;
 }
 root_type RdmaAllocateResponse;

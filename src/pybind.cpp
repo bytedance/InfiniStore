@@ -150,13 +150,14 @@ PYBIND11_MODULE(_infinistore, m) {
         .def(
             "allocate_rdma_async",
             [](Connection &self, std::vector<std::string> &keys, int block_size,
-               std::function<void(py::array)> callback) {
-                self.allocate_rdma_async(keys, block_size,
-                                         [callback](std::vector<remote_block_t> *blocks) {
-                                             py::gil_scoped_acquire acquire;
-                                             callback(as_pyarray(std::move(*blocks)));
-                                             delete blocks;
-                                         });
+               std::function<void(py::array, unsigned int)> callback) {
+                self.allocate_rdma_async(
+                    keys, block_size,
+                    [callback](std::vector<remote_block_t> *blocks, unsigned int error_code) {
+                        py::gil_scoped_acquire acquire;
+                        callback(as_pyarray(std::move(*blocks)), error_code);
+                        delete blocks;
+                    });
                 return;
             },
             py::call_guard<py::gil_scoped_release>(), "Allocate remote memory asynchronously")

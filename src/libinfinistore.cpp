@@ -763,11 +763,15 @@ std::vector<remote_block_t> *Connection::allocate_rdma(std::vector<std::string> 
     std::promise<void> promise;
     auto future = promise.get_future();
     std::vector<remote_block_t> *ret_blocks;
-    allocate_rdma_async(keys, block_size,
-                        [&promise, &ret_blocks](std::vector<remote_block_t> *blocks) {
-                            ret_blocks = blocks;
-                            promise.set_value();
-                        });
+    allocate_rdma_async(
+        keys, block_size,
+        [&promise, &ret_blocks](std::vector<remote_block_t> *blocks, unsigned int error_code) {
+            ret_blocks = blocks;
+            if (error_code != FINISH) {
+                ERROR("allocate_rdma failed, error_code: {}", error_code);
+            }
+            promise.set_value();
+        });
 
     auto status = future.wait_for(std::chrono::seconds(5));  // timeout 5s
     if (status == std::future_status::timeout) {
@@ -777,13 +781,13 @@ std::vector<remote_block_t> *Connection::allocate_rdma(std::vector<std::string> 
     else {
         future.get();
     }
-
     return ret_blocks;
 }
 
 // send a message to allocate memory and return the address
-int Connection::allocate_rdma_async(std::vector<std::string> &keys, int block_size,
-                                    std::function<void(std::vector<remote_block_t> *)> callback) {
+int Connection::allocate_rdma_async(
+    std::vector<std::string> &keys, int block_size,
+    std::function<void(std::vector<remote_block_t> *, unsigned int error_code)> callback) {
     /*
     ENCODING
     remote_meta_request req = {
@@ -818,7 +822,7 @@ int Connection::allocate_rdma_async(std::vector<std::string> &keys, int block_si
             };
             blocks->push_back(remote_block);
         }
-        callback(blocks);
+        callback(blocks, resp->error_code());
     });
 
     recv_wr = {
