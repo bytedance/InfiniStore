@@ -14,6 +14,7 @@
 #include "meta_request_generated.h"
 
 // local TCP protocols
+#include "delete_keys_generated.h"
 #include "get_match_last_index_generated.h"
 #include "local_meta_request_generated.h"
 
@@ -45,6 +46,7 @@ using namespace flatbuffers;
 #define OP_RDMA_WRITE_COMMIT 'T'
 #define OP_CHECK_EXIST 'C'
 #define OP_GET_MATCH_LAST_IDX 'M'
+#define OP_DELETE_KEYS 'X'
 #define OP_SIZE 1
 // please add op name in protocol.cpp
 

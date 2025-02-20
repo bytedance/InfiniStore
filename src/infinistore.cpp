@@ -124,6 +124,7 @@ struct Client {
     void reset_client_read_state();
     int check_key(const std::string &key_to_check);
     int get_match_last_index(const GetMatchLastIndexRequest *request);
+    int delete_keys(const DeleteKeysRequest *request);
     int rdma_exchange();
     int prepare_recv_rdma_request(int buf_idx);
     void wait_for_ipc_close(std::shared_ptr<CudaTaskQueue> cuda_task_queue);
@@ -639,7 +640,7 @@ int Client::read_cache(const LocalMetaRequest *meta_req) {
 
     assert(task->ptrs.size() == remote_addrs.size());
 
-    for (int i = 0; i < task->ptrs.size(); i++) {
+    for (size_t i = 0; i < task->ptrs.size(); i++) {
         CHECK_CUDA(cudaMemcpyAsync((void *)remote_addrs[i], task->ptrs[i]->ptr, block_size,
                                    cudaMemcpyHostToDevice, cuda_stream));
     }
@@ -1127,6 +1128,32 @@ int Client::get_match_last_index(const GetMatchLastIndexRequest *request) {
     return 0;
 }
 
+/**
+ * The function deletes a list of keys in kv_map.
+ *
+ * Input:
+ *     request: the request contains a list of the keys to delete
+ *
+ * Output:
+ *     the actual count of the keys deleted.
+ *
+ * Return:
+ *     success code
+ *
+ * NOTE: The function handles the runtime_error and continue for next key
+ **/
+int Client::delete_keys(const DeleteKeysRequest *request) {
+    int count = 0;
+    for (const auto *key : *request->keys()) {
+        if (kv_map.erase(key->str()) == 1) {
+            count++;
+        }
+    }
+    send_resp(FINISH, &count, sizeof(count));
+    reset_client_read_state();
+    return 0;
+}
+
 // return value of handle_request:
 // if ret is less than 0, it is an system error, outer code will close the
 // connection if ret is greater than 0, it is an application error or success
@@ -1166,6 +1193,12 @@ void handle_request(uv_stream_t *stream, client_t *client) {
             const GetMatchLastIndexRequest *request =
                 GetGetMatchLastIndexRequest(client->tcp_recv_buffer_);
             error_code = client->get_match_last_index(request);
+            break;
+        }
+        case OP_DELETE_KEYS: {
+            INFO("delete keys...");
+            const DeleteKeysRequest *request = GetDeleteKeysRequest(client->tcp_recv_buffer_);
+            error_code = client->delete_keys(request);
             break;
         }
         default:
@@ -1211,7 +1244,8 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
                     if (client->header_.op == OP_R || client->header_.op == OP_W ||
                         client->header_.op == OP_CHECK_EXIST ||
                         client->header_.op == OP_GET_MATCH_LAST_IDX ||
-                        client->header_.op == OP_RDMA_EXCHANGE) {
+                        client->header_.op == OP_RDMA_EXCHANGE ||
+                        client->header_.op == OP_DELETE_KEYS) {
                         int ret = verify_header(&client->header_);
                         if (ret != 0) {
                             ERROR("Invalid header");

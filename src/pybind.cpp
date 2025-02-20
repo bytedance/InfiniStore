@@ -174,6 +174,8 @@ PYBIND11_MODULE(_infinistore, m) {
         .def("get_match_last_index", &Connection::get_match_last_index,
              py::call_guard<py::gil_scoped_release>(),
              "get the last index of a key list which is in the store")
+        .def("delete_keys", &Connection::delete_keys, py::call_guard<py::gil_scoped_release>(),
+             "delete a list of keys which are in store")
 
         .def(
             "register_mr",

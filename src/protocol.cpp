@@ -8,7 +8,8 @@ std::unordered_map<char, std::string> op_map = {{OP_R, "READ"},
                                                 {OP_RDMA_WRITE_COMMIT, "RDMA_WRITE_COMMIT"},
                                                 {OP_RDMA_ALLOCATE, "RDMA_ALLOCATE"},
                                                 {OP_CHECK_EXIST, "CHECK_EXIST"},
-                                                {OP_GET_MATCH_LAST_IDX, "GET_MATCH_LAST_IDX"}};
+                                                {OP_GET_MATCH_LAST_IDX, "GET_MATCH_LAST_IDX"},
+                                                {OP_DELETE_KEYS, "DELETE_KEYS"}};
 std::string op_name(char op_code) {
     auto it = op_map.find(op_code);
     if (it != op_map.end()) {

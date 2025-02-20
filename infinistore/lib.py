@@ -1026,3 +1026,23 @@ class InfinityConnection:
         if len(ret) == 0:
             raise Exception("allocate memory failed")
         return ret
+
+    def delete_keys(self, keys: List[str]):
+        """
+        Delete a list of keys
+
+        Args:
+            keys (List[str]): The list of string keys to delete
+
+        Returns:
+            int: The count of the deleted keys
+
+        Raises:
+            Exception: If there is something wrong(return value is -1)
+        """
+        ret = self.conn.delete_keys(keys)
+        if ret < 0:
+            raise Exception(
+                "somethings are wrong, not all the specified keys were deleted"
+            )
+        return ret

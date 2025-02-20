@@ -526,3 +526,58 @@ def test_benchmark(server):
     )
     print(result.stdout)
     assert result.returncode == 0
+
+
+@pytest.mark.parametrize("test_dtype", [torch.float32])
+@pytest.mark.parametrize(
+    "test_conn_type", [infinistore.TYPE_RDMA, infinistore.TYPE_LOCAL_GPU]
+)
+def test_delete_keys(server, test_dtype, test_conn_type):
+    BLOCK_SIZE = 4096
+    # The count of elements in a key indexed region
+    BLOB_SIZE = 1024
+    KEY_COUNT = 3
+
+    config = infinistore.ClientConfig(
+        host_addr="127.0.0.1",
+        service_port=92345,
+        link_type=infinistore.LINK_ETHERNET,
+        dev_name=f"{RDMA_DEV[0]}",
+        connection_type=test_conn_type,
+    )
+    conn = infinistore.InfinityConnection(config)
+    conn.connect()
+
+    src_tensor = torch.randn(BLOCK_SIZE, device="cuda", dtype=test_dtype)
+    # Generate the names of the keys
+    keys = [generate_random_string(10) for i in range(KEY_COUNT)]
+
+    if test_conn_type == infinistore.TYPE_RDMA:
+        conn.register_mr(src_tensor)
+        # Allocate BLOB_SIZE elements for each key
+        remote_addrs = conn.allocate_rdma(keys, BLOB_SIZE)
+
+        conn.rdma_write_cache(
+            src_tensor,
+            [i * BLOB_SIZE for i in range(KEY_COUNT)],
+            BLOB_SIZE,
+            remote_addrs,
+        )
+    else:
+        offsets = [i * BLOB_SIZE for i in range(KEY_COUNT)]
+        conn.local_gpu_write_cache(src_tensor, list(zip(keys, offsets)), BLOB_SIZE)
+
+    torch.cuda.synchronize(src_tensor.device)
+    conn.sync()
+
+    # Check all the keys exist
+    for i in range(KEY_COUNT):
+        assert conn.check_exist(keys[i])
+
+    # Delete the keys at index 0 and 2
+    assert conn.delete_keys([keys[0], keys[2]]) == 2
+
+    # Verify the correctness
+    assert conn.check_exist(keys[1])
+    assert not conn.check_exist(keys[0])
+    assert not conn.check_exist(keys[2])

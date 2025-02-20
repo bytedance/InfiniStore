@@ -1,0 +1,6 @@
+table  DeleteKeysRequest {
+  keys: [string];
+}
+
+root_type DeleteKeysRequest;
+

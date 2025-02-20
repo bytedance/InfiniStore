@@ -706,7 +706,7 @@ int Connection::check_exist(std::string key) {
     return exist;
 }
 
-int Connection::get_match_last_index(std::vector<std::string> keys) {
+int Connection::get_match_last_index(std::vector<std::string> &keys) {
     INFO("get_match_last_index");
 
     FlatBufferBuilder builder(64 << 10);
@@ -755,6 +755,67 @@ int Connection::get_match_last_index(std::vector<std::string> keys) {
     }
 
     return last_index;
+}
+
+/**
+ *  The function sends the request to delete a list of keys from the store
+ *
+ *  Input:
+ *    keys: the list of the keys to delete
+ *
+ *  Return:
+ *    The count of the keys deleted, -1 if there is an error
+ */
+int Connection::delete_keys(const std::vector<std::string> &keys) {
+    INFO("delete_keys");
+
+    FlatBufferBuilder builder(64 << 10);
+
+    auto keys_offset = builder.CreateVectorOfStrings(keys);
+    auto req = CreateDeleteKeysRequest(builder, keys_offset);
+    builder.Finish(req);
+
+    header_t header = {
+        .magic = MAGIC,
+        .op = OP_DELETE_KEYS,
+        .body_size = builder.GetSize(),
+    };
+
+    struct iovec iov[2];
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+
+    iov[0].iov_base = &header;
+    iov[0].iov_len = FIXED_HEADER_SIZE;
+    iov[1].iov_base = builder.GetBufferPointer();
+    iov[1].iov_len = builder.GetSize();
+
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 2;
+
+    if (sendmsg(sock_, &msg, 0) < 0) {
+        ERROR("Failed to send header and body for delete_keys message");
+        return -1;
+    }
+
+    // TODO: Merge the two recv's into one?
+    int return_code = 0;
+    if (recv(sock_, &return_code, RETURN_CODE_SIZE, MSG_WAITALL) != RETURN_CODE_SIZE) {
+        ERROR("Failed to receive return code for delete_keys");
+        return -1;
+    }
+    if (return_code != FINISH) {
+        ERROR("Failed to delete keys, error: {}", return_code);
+        return -1;
+    }
+
+    int count = -1;
+    if (recv(sock_, &count, sizeof(count), MSG_WAITALL) != sizeof(count)) {
+        ERROR("Failed to receive count of the keys deleted");
+        return -1;
+    }
+
+    return count;
 }
 
 std::vector<remote_block_t> *Connection::allocate_rdma(std::vector<std::string> &keys,
