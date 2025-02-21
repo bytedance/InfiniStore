@@ -58,6 +58,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.close"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.close()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.connect"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.connect()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.connect_async"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.connect_async()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.delete_keys"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.delete_keys()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.get_match_last_index"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.get_match_last_index()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.local_gpu_write_cache"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.local_gpu_write_cache()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.local_gpu_write_cache_single"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.local_gpu_write_cache_single()</span></code></a></li>
@@ -292,6 +293,26 @@ invoking a callback function from the C++ code.</p>
 </dd>
 </dl>
 <p>This method runs the blocking connection setup in an executor to avoid blocking the event loop.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="infinistore.InfinityConnection.delete_keys">
+<span class="sig-name descname"><span class="pre">delete_keys</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">keys</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">]</span></span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#infinistore.InfinityConnection.delete_keys" title="Permalink to this definition"></a></dt>
+<dd><p>Delete a list of keys</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>keys</strong> (<em>List</em><em>[</em><em>str</em><em>]</em>) – The list of string keys to delete</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The count of the deleted keys</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>int</p>
+</dd>
+<dt class="field-even">Raises<span class="colon">:</span></dt>
+<dd class="field-even"><p><strong>Exception</strong> – If there is something wrong(return value is -1)</p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py method">
