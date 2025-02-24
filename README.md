@@ -41,6 +41,19 @@ pip install -e .
 pip install pre-commit
 pre-commit install
 ```
+
+## build in docker container
+
+```
+cd /path/to/your/project
+docker build -t infinistore_build:0.1 .
+docker run --rm -it -v $(pwd):/infinistore infinistore_build:0.1
+```
+Once in the docker container, your project should be in:
+   /infinistore
+and you can work from here to build your projects leveraging
+the build environment in docker container.
+
 ## client example
 
 check example code
