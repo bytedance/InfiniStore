@@ -17,6 +17,7 @@ def parse_args():
         required=False,
         action="store_true",
         help="use rdma connection, default False",
+        default=True,
     )
 
     parser.add_argument(
@@ -119,9 +120,7 @@ def run(args):
         log_level="warning",
     )
 
-    config.connection_type = (
-        infinistore.TYPE_RDMA if args.rdma else infinistore.TYPE_LOCAL_GPU
-    )
+    config.connection_type = infinistore.TYPE_RDMA
 
     conn = infinistore.InfinityConnection(config)
     try:
@@ -133,15 +132,13 @@ def run(args):
         block_size = args.block_size * 1024 // 4
         num_of_blocks = args.size * 1024 * 1024 // (args.block_size * 1024)
 
-        with infinistore.DisableTorchCaching():
-            src_tensor = torch.rand(
-                num_of_blocks * block_size, device=src_device, dtype=torch.float32
-            )
+        src_tensor = torch.rand(
+            num_of_blocks * block_size, device=src_device, dtype=torch.float32
+        )
 
-        with infinistore.DisableTorchCaching():
-            dst_tensor = torch.rand(
-                num_of_blocks * block_size, device=dst_device, dtype=torch.float32
-            )
+        dst_tensor = torch.rand(
+            num_of_blocks * block_size, device=dst_device, dtype=torch.float32
+        )
 
         torch.cuda.synchronize(src_tensor.device)
         torch.cuda.synchronize(dst_tensor.device)
@@ -179,10 +176,6 @@ def run(args):
                         offset_blocks[i * n : i * n + n],
                         block_size,
                         remote_addrs[i * n : i * n + n],
-                    )
-                else:
-                    conn.local_gpu_write_cache(
-                        src_tensor, blocks[i * n : i * n + n], block_size
                     )
             conn.sync()
             # print(f"write  takes {time.time() - start} seconds")

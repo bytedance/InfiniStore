@@ -1,8 +1,6 @@
 #ifndef PROTOCOL_H
 #define PROTOCOL_H
 
-#include <cuda.h>
-#include <cuda_runtime.h>
 #include <infiniband/verbs.h>
 
 #include <string>
@@ -16,7 +14,6 @@
 // local TCP protocols
 #include "delete_keys_generated.h"
 #include "get_match_last_index_generated.h"
-#include "local_meta_request_generated.h"
 
 using namespace flatbuffers;
 
@@ -37,9 +34,6 @@ using namespace flatbuffers;
 #define MAGIC 0xdeadbeef
 #define MAGIC_SIZE 4
 
-#define OP_R 'R'
-#define OP_W 'W'
-#define OP_SYNC 'S'
 #define OP_RDMA_EXCHANGE 'E'
 #define OP_RDMA_ALLOCATE 'D'
 #define OP_RDMA_READ 'A'

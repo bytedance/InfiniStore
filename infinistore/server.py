@@ -16,7 +16,6 @@ import uvicorn
 import torch
 import argparse
 import logging
-import subprocess
 import os
 
 
@@ -189,12 +188,6 @@ def parse_args():
         help="(deprecated)number of streams, default 1, can only be 1, 2, 4",
         type=int,
     )
-    parser.add_argument(
-        "--warmup",
-        required=False,
-        default=False,
-        action="store_true",
-    )
 
     return parser.parse_args()
 
@@ -231,20 +224,6 @@ def main():
     # 16 GB pre allocated
     # TODO: find the minimum size for pinning memory and ib_reg_mr
     register_server(loop, config)
-
-    if args.warmup:
-        Logger.info("Starting warm up all cuda devices, it may take a while...")
-        subprocess.Popen(
-            [
-                "python",
-                "-m",
-                "infinistore.warmup",
-                "--service-port",
-                str(config.service_port),
-                "--start-delay",
-                "2",
-            ]
-        )
 
     prevent_oom()
     Logger.info("set oom_score_adj to -1000 to prevent OOM")

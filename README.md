@@ -5,9 +5,7 @@
 
 ## pre-required
 
-* CUDA dev toolkit https://developer.nvidia.com/cuda-toolkit
 * kernel module nv_peer_mem https://github.com/Mellanox/nv_peer_memory for RDMAGPUDirect
-
 
 ## install
 

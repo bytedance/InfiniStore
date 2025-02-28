@@ -1,7 +1,6 @@
 from infinistore import (
     ClientConfig,
     check_supported,
-    DisableTorchCaching,
     InfinityConnection,
 )
 import infinistore
@@ -20,37 +19,29 @@ def generate_random_string(length):
 
 def run(conn, src_device="cuda:0", dst_device="cuda:2"):
     check_supported()
-    with DisableTorchCaching():  # not required if using RDMA
-        src_tensor = torch.tensor(
-            [i for i in range(4096)], device=src_device, dtype=torch.float32
-        )
-    if conn.rdma_connected:
-        conn.register_mr(src_tensor)
+    src_tensor = torch.tensor(
+        [i for i in range(4096)], device=src_device, dtype=torch.float32
+    )
+    conn.register_mr(src_tensor)
 
-    if conn.rdma_connected:
-        keys = ["key1", "key2", "key3"]
-        remote_addr = conn.allocate_rdma(
-            keys, 1024 * 4
-        )  # 1024(block_size) * 4(element size)
-        # print(f"remote_addr: {remote_addr}")
+    keys = ["key1", "key2", "key3"]
+    remote_addr = conn.allocate_rdma(
+        keys, 1024 * 4
+    )  # 1024(block_size) * 4(element size)
+    # print(f"remote_addr: {remote_addr}")
     now = time.time()
-    if conn.rdma_connected:
-        conn.rdma_write_cache(src_tensor, [0, 1024, 2048], 1024, remote_addr)
-    else:
-        conn.local_gpu_write_cache(
-            src_tensor, [("key1", 0), ("key2", 1024), ("key3", 2048)], 1024
-        )
+
+    conn.rdma_write_cache(src_tensor, [0, 1024, 2048], 1024, remote_addr)
+
     print(f"write elapse time is {time.time() - now}")
 
     before_sync = time.time()
     conn.sync()
     print(f"sync elapse time is {time.time() - before_sync}")
 
-    with DisableTorchCaching():
-        dst_tensor = torch.zeros(4096, device=dst_device, dtype=torch.float32)
+    dst_tensor = torch.zeros(4096, device=dst_device, dtype=torch.float32)
 
-    if conn.rdma_connected:
-        conn.register_mr(dst_tensor)
+    conn.register_mr(dst_tensor)
     now = time.time()
 
     conn.read_cache(dst_tensor, [("key1", 0), ("key2", 1024)], 1024)
@@ -83,8 +74,3 @@ if __name__ == "__main__":
     for src, dst in m:
         print(f"rdma connection: {src} -> {dst}")
         run(rdma_conn, src, dst)
-
-    config.connection_type = infinistore.TYPE_LOCAL_GPU
-    local_conn = InfinityConnection(config)
-    local_conn.connect()
-    run(local_conn)

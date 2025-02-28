@@ -2,8 +2,6 @@
 
 #include <arpa/inet.h>
 #include <assert.h>
-#include <cuda.h>
-#include <cuda_runtime.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -641,33 +639,6 @@ int Connection::exchange_conn_info() {
     return 0;
 }
 
-int Connection::sync_local() {
-    header_t header;
-    header = {
-        .magic = MAGIC,
-        .op = OP_SYNC,
-    };
-    send_exact(sock_, &header, FIXED_HEADER_SIZE);
-
-    int return_code = -1;
-    if (recv(sock_, &return_code, RETURN_CODE_SIZE, MSG_WAITALL) != RETURN_CODE_SIZE) {
-        ERROR("Failed to receive return code");
-        return -1;
-    }
-    if (return_code != FINISH) {
-        ERROR("Failed to sync local");
-        return -1;
-    }
-
-    int inflight_syncs = 0;
-    if (recv(sock_, &inflight_syncs, sizeof(int), MSG_WAITALL) != sizeof(int)) {
-        ERROR("Failed to receive inflight mr size");
-        return -1;
-    }
-
-    return inflight_syncs;
-}
-
 int Connection::check_exist(std::string key) {
     header_t header;
     header = {.magic = MAGIC, .op = OP_CHECK_EXIST, .body_size = key.size()};
@@ -1177,92 +1148,8 @@ int Connection::r_rdma_async(std::vector<block_t> &blocks, int block_size, void 
     return 0;
 }
 
-int Connection::rw_local(char op, const std::vector<block_t> &blocks, int block_size, void *ptr,
-                         int device_id) {
-    assert(ptr != NULL);
-
-    std::vector<uint8_t> ipc_handle(sizeof(cudaIpcMemHandle_t));
-    CHECK_CUDA(cudaIpcGetMemHandle((cudaIpcMemHandle_t *)ipc_handle.data(), ptr));
-
-    /*
-    local_meta_t meta = {
-        .ipc_handle = ipc_handle,
-        .block_size = block_size,
-        .blocks = blocks,
-    };
-    */
-
-    // dynamic create buffer.
-    FlatBufferBuilder builder(64 << 10);
-
-    std::vector<Offset<Block>> block_offsets;
-    for (const auto &block : blocks) {
-        block_offsets.push_back(
-            CreateBlock(builder, builder.CreateString(block.key), block.offset));
-    }
-
-    auto req =
-        CreateLocalMetaRequestDirect(builder, device_id, &ipc_handle, block_size, &block_offsets);
-
-    builder.Finish(req);
-
-    header_t header = {
-        .magic = MAGIC,
-        .op = op,
-        .body_size = builder.GetSize(),
-    };
-
-    struct iovec iov[2];
-    struct msghdr msg;
-
-    iov[0].iov_base = &header;
-    iov[0].iov_len = FIXED_HEADER_SIZE;
-    iov[1].iov_base = builder.GetBufferPointer();
-    iov[1].iov_len = builder.GetSize();
-
-    memset(&msg, 0, sizeof(msg));
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 2;
-
-    if (sendmsg(sock_, &msg, 0) < 0) {
-        ERROR("Failed to send header and body");
-        return -1;
-    }
-
-    int return_code;
-    if (recv(sock_, &return_code, RETURN_CODE_SIZE, MSG_WAITALL) != RETURN_CODE_SIZE) {
-        ERROR("Failed to receive return code");
-        return -1;
-    }
-
-    if (return_code != FINISH && return_code != TASK_ACCEPTED) {
-        ERROR("return code: {}", return_code);
-        return -1;
-    }
-    return 0;
-}
-
 int Connection::register_mr(void *base_ptr, size_t ptr_region_size) {
-    cudaPointerAttributes attr;
-    cudaError_t err = cudaPointerGetAttributes(&attr, base_ptr);
-    if (err == cudaSuccess) {
-        if (attr.type == cudaMemoryTypeDevice) {
-            INFO("try to register device memory");
-        }
-        else if (attr.type == cudaMemoryTypeHost || attr.type == cudaMemoryTypeUnregistered) {
-            INFO("try to register host memory");
-        }
-        else {
-            WARN("the memory type of {} is {}, I do not know if registering on RMDA will be OK",
-                 base_ptr, (uint32_t)attr.type);
-            return -1;
-        }
-    }
-    else {
-        ERROR("Failed to get pointer attributes: {}", cudaGetErrorString(err));
-        return -1;
-    }
-
+    assert(base_ptr != NULL);
     if (local_mr_.count((uintptr_t)base_ptr)) {
         WARN("this memory address is already registered!");
         ibv_dereg_mr(local_mr_[(uintptr_t)base_ptr]);

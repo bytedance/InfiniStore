@@ -12,7 +12,7 @@ for PYTHON in "${PYTHON_VERSIONS[@]}"; do
         exit 1
     fi
     unset LD_LIBRARY_PATH
-    export LD_LIBRARY_PATH=/usr/local/lib:$($PYTHON -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")/nvidia/cuda_runtime/lib/:/usr/local/lib64
+    export LD_LIBRARY_PATH=/usr/local/lib
     #ldd check, auditwheel will also check LD_LIBRARY_PATH
     ldd src/*.so
     ${PYTHON} setup.py bdist_wheel

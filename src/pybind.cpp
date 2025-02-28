@@ -50,18 +50,6 @@ PYBIND11_MODULE(_infinistore, m) {
         .def(py::init<>())
         .def("close", &Connection::close_conn, py::call_guard<py::gil_scoped_release>(),
              "close the connection")
-        .def(
-            "rw_local",
-            [](Connection &self, char op,
-               const std::vector<std::tuple<std::string, unsigned long>> &blocks, int block_size,
-               uintptr_t ptr, int device_id) {
-                std::vector<block_t> c_blocks;
-                for (const auto &block : blocks) {
-                    c_blocks.push_back(block_t{std::get<0>(block), std::get<1>(block)});
-                }
-                return self.rw_local(op, c_blocks, block_size, (void *)ptr, device_id);
-            },
-            py::call_guard<py::gil_scoped_release>(), "Read/Write cpu memory from GPU device")
 
         .def(
             "r_rdma",
@@ -162,8 +150,6 @@ PYBIND11_MODULE(_infinistore, m) {
             },
             py::call_guard<py::gil_scoped_release>(), "Allocate remote memory asynchronously")
 
-        .def("sync_local", &Connection::sync_local, py::call_guard<py::gil_scoped_release>(),
-             "sync the cuda stream")
         .def("init_connection", &Connection::init_connection,
              py::call_guard<py::gil_scoped_release>(), "init connection")
         .def("setup_rdma", &Connection::setup_rdma, py::call_guard<py::gil_scoped_release>(),

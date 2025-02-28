@@ -1,9 +1,8 @@
 #include "protocol.h"
 
-std::unordered_map<char, std::string> op_map = {{OP_R, "READ"},
-                                                {OP_W, "WRITE"},
-                                                {OP_SYNC, "SYNC"},
-                                                {OP_RDMA_EXCHANGE, "RDMA_EXCHANGE"},
+#include <unordered_map>
+
+std::unordered_map<char, std::string> op_map = {{OP_RDMA_EXCHANGE, "RDMA_EXCHANGE"},
                                                 {OP_RDMA_READ, "RDMA_READ"},
                                                 {OP_RDMA_WRITE_COMMIT, "RDMA_WRITE_COMMIT"},
                                                 {OP_RDMA_ALLOCATE, "RDMA_ALLOCATE"},
@@ -15,7 +14,7 @@ std::string op_name(char op_code) {
     if (it != op_map.end()) {
         return it->second;
     }
-    return "UNKNOWN";  // 如果未找到匹配项
+    return "UNKNOWN";
 }
 
 uint8_t* FixedBufferAllocator::allocate(size_t size) {

@@ -3,8 +3,6 @@
 
 #include <arpa/inet.h>
 #include <assert.h>
-#include <cuda.h>
-#include <cuda_runtime.h>
 #include <execinfo.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,21 +43,6 @@ bool extend_in_flight = false;
 // indicate the number of cudaIpcOpenMemHandle
 std::atomic<unsigned int> opened_ipc{0};
 
-enum CUDA_TASK_TYPE {
-    CUDA_READ,
-    CUDA_WRITE,
-    QUIT,
-};
-
-struct CUDA_TASK {
-    std::vector<boost::intrusive_ptr<PTR>> ptrs;
-    enum CUDA_TASK_TYPE type;
-    int device = -1;
-    void *d_ptr = NULL;
-    cudaStream_t stream;
-    cudaEvent_t event;
-};
-
 std::unordered_map<uintptr_t, boost::intrusive_ptr<PTR>> inflight_rdma_writes;
 
 std::unordered_map<std::string, boost::intrusive_ptr<PTR>> kv_map;
@@ -98,14 +81,8 @@ struct Client {
     bool rdma_connected_ = false;
     struct ibv_comp_channel *comp_channel_ = NULL;
 
-    std::atomic<unsigned int> remain_{0};
     // notify thread new request
     uv_sem_t sem_;
-    // we use this thread to wait for the completion of the local GPU operation
-    std::future<void> cuda_future_;
-
-    using CudaTaskQueue = boost::lockfree::spsc_queue<CUDA_TASK *, boost::lockfree::capacity<4096>>;
-    std::shared_ptr<CudaTaskQueue> cuda_task_queue_ = std::make_shared<CudaTaskQueue>();
 
     uv_poll_t poll_handle_;
 
@@ -116,8 +93,6 @@ struct Client {
     void cq_poll_handle(uv_poll_t *handle, int status, int events);
     int read_rdma_cache(const RemoteMetaRequest *req);
     int allocate_rdma(const RemoteMetaRequest *req);
-    int read_cache(const LocalMetaRequest *meta_req);
-    int write_cache(const LocalMetaRequest *meta_req);
     // send response to client through TCP
     void send_resp(int return_code, void *buf, size_t size);
     int sync_stream();
@@ -127,23 +102,12 @@ struct Client {
     int delete_keys(const DeleteKeysRequest *request);
     int rdma_exchange();
     int prepare_recv_rdma_request(int buf_idx);
-    void wait_for_ipc_close(std::shared_ptr<CudaTaskQueue> cuda_task_queue);
 };
 
 typedef struct Client client_t;
 
 Client::~Client() {
     INFO("free client resources");
-
-    if (cuda_future_.valid()) {
-        // send quit signal to the waiting_for_ipc_close thread
-        CUDA_TASK *task = new CUDA_TASK();
-        task->type = QUIT;
-        // cuda_task_queue_.push(task);
-        cuda_task_queue_->push(task);
-        uv_sem_post(&sem_);
-        // cuda_future_.get().get() could block the main thread. we do not wait for it.
-    }
 
     if (poll_handle_.data) {
         uv_poll_stop(&poll_handle_);
@@ -590,125 +554,6 @@ void on_write(uv_write_t *req, int status) {
     free(req);
 }
 
-int Client::read_cache(const LocalMetaRequest *meta_req) {
-    INFO("do read_cache...");
-
-    const header_t *header = &this->header_;
-    void *d_ptr;
-
-    assert(header != NULL);
-    // TODO: check device_id
-
-    CHECK_CUDA(cudaSetDevice(meta_req->device()));
-
-    cudaEvent_t event;
-    // create events
-    CHECK_CUDA(cudaEventCreate(&event));
-
-    cudaStream_t cuda_stream;
-    CHECK_CUDA(cudaStreamCreate(&cuda_stream));
-
-    cudaIpcMemHandle_t ipc_handle = *(cudaIpcMemHandle_t *)meta_req->ipc_handle()->data();
-    CHECK_CUDA(cudaIpcOpenMemHandle(&d_ptr, ipc_handle, cudaIpcMemLazyEnablePeerAccess));
-    opened_ipc++;
-
-    size_t block_size = meta_req->block_size();
-    int idx = 0;
-
-    CUDA_TASK *task = new CUDA_TASK();
-    task->ptrs.reserve(meta_req->blocks()->size());
-    std::vector<uintptr_t> remote_addrs;
-
-    for (auto *block : *meta_req->blocks()) {
-        auto key = block->key()->str();
-        if (kv_map.count(key) == 0 || kv_map[key]->committed == false) {
-            ERROR("Key not found: {}", key);
-            CHECK_CUDA(cudaIpcCloseMemHandle(d_ptr));
-            CHECK_CUDA(cudaEventDestroy(event));
-            CHECK_CUDA(cudaStreamDestroy(cuda_stream));
-            delete task;
-            return KEY_NOT_FOUND;
-        }
-
-        void *h_src = kv_map[key]->ptr;
-        assert(h_src != NULL);
-
-        DEBUG("key: {}, local_addr: {}, size : {}", key, (uintptr_t)h_src, block_size);
-
-        task->ptrs.push_back(kv_map[key]);  // keep PTR in task as reference count.
-        remote_addrs.push_back((uintptr_t)((char *)d_ptr + block->offset()));
-        idx++;
-    }
-
-    assert(task->ptrs.size() == remote_addrs.size());
-
-    for (size_t i = 0; i < task->ptrs.size(); i++) {
-        CHECK_CUDA(cudaMemcpyAsync((void *)remote_addrs[i], task->ptrs[i]->ptr, block_size,
-                                   cudaMemcpyHostToDevice, cuda_stream));
-    }
-
-    CHECK_CUDA(cudaEventRecord(event, cuda_stream));
-
-    task->device = meta_req->device();
-    task->stream = cuda_stream;
-    task->event = event;
-    task->type = CUDA_READ;
-    task->d_ptr = d_ptr;
-
-    remain_++;
-
-    if (!cuda_future_.valid()) {
-        // initiate the semaphore
-        uv_sem_init(&sem_, 0);
-        cuda_future_ =
-            std::async(std::launch::async, [&]() { this->wait_for_ipc_close(cuda_task_queue_); });
-    }
-
-    cuda_task_queue_->push(task);
-    uv_sem_post(&sem_);  // wake up thread to clean up
-
-    send_resp(TASK_ACCEPTED, NULL, 0);
-
-    reset_client_read_state();
-
-    return 0;
-}
-
-void Client::wait_for_ipc_close(std::shared_ptr<CudaTaskQueue> cuda_task_queue) {
-    CUDA_TASK *task = NULL;
-    while (true) {
-        uv_sem_wait(&sem_);
-        cuda_task_queue->pop(task);
-        assert(task != NULL);
-        assert(task->type == CUDA_WRITE || task->type == CUDA_READ || task->type == QUIT);
-        if (task->type == QUIT) {
-            // clean up
-            delete task;
-            break;
-        }
-
-        CHECK_CUDA(cudaSetDevice(task->device));
-        CHECK_CUDA(cudaEventSynchronize(task->event));
-        CHECK_CUDA(cudaEventDestroy(task->event));
-        CHECK_CUDA(cudaStreamDestroy(task->stream));
-        CHECK_CUDA(cudaIpcCloseMemHandle(task->d_ptr));
-        opened_ipc--;
-        DEBUG("CUDA_TASK done");
-
-        if (task->type == CUDA_WRITE) {
-            // WARN YOU SHOULD NOT access kv_map or inflight_rdma_kv_map in this thread
-            for (auto &ptr : task->ptrs) {
-                ptr->committed = true;
-            }
-        }
-        remain_--;
-
-        delete task;
-    }
-    uv_sem_destroy(&sem_);
-    INFO("quit the waiting_for_ipc_close thread");
-}
-
 void add_mempool(uv_work_t *req) {
     while (opened_ipc > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -720,110 +565,6 @@ void add_mempool_completion(uv_work_t *req, int status) {
     extend_in_flight = false;
     mm->need_extend = false;
     delete req;
-}
-
-int Client::write_cache(const LocalMetaRequest *meta_req) {
-    INFO("do write_cache..., num of blocks: {}", meta_req->blocks()->size());
-
-    void *d_ptr;
-    int return_code = TASK_ACCEPTED;
-
-    cudaIpcMemHandle_t ipc_handle = *(cudaIpcMemHandle_t *)meta_req->ipc_handle()->data();
-
-    CHECK_CUDA(cudaSetDevice(meta_req->device()));
-
-    CHECK_CUDA(cudaIpcOpenMemHandle(&d_ptr, ipc_handle, cudaIpcMemLazyEnablePeerAccess));
-    opened_ipc++;
-
-    int key_idx = 0;
-    size_t block_size = meta_req->block_size();
-    size_t num_of_blocks = meta_req->blocks()->size();
-
-    CUDA_TASK *task = new CUDA_TASK();
-
-    auto start = std::chrono::high_resolution_clock::now();
-
-    cudaEvent_t event;
-
-    CHECK_CUDA(cudaEventCreate(&event));
-
-    // create streams per request.
-    cudaStream_t cuda_stream;
-    CHECK_CUDA(cudaStreamCreate(&cuda_stream));
-
-    // allocate host memory
-    bool ret = mm->allocate(
-        block_size, num_of_blocks, [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
-            auto block = meta_req->blocks()->Get(key_idx);
-            DEBUG("key: {}, local_addr: {}, size : {}", block->key()->str(), (uintptr_t)addr,
-                  block_size);
-
-            // deduplicate the key
-            const auto &key = block->key()->str();
-            if (kv_map.count(key) != 0) {
-                // this key could be committed or uncommitted, no mather what it is, we should skip
-                // it
-                DEBUG("local gpu write: Key already exists: {}, skip this key", key);
-                key_idx++;
-                return;
-            }
-            CHECK_CUDA(cudaMemcpyAsync((void *)addr, (void *)((char *)d_ptr + block->offset()),
-                                       block_size, cudaMemcpyDeviceToHost, cuda_stream));
-
-            auto ptr = boost::intrusive_ptr<PTR>(new PTR(addr, block_size, pool_idx, false));
-            kv_map[key] = ptr;
-            task->ptrs.push_back(ptr);
-            key_idx++;
-        });
-    if (global_config.auto_increase && mm->need_extend && !extend_in_flight) {
-        INFO("Extend another mempool");
-        uv_work_t *req = new uv_work_t();
-        uv_queue_work(loop, req, add_mempool, add_mempool_completion);
-        extend_in_flight = true;
-    }
-
-    CHECK_CUDA(cudaEventRecord(event, cuda_stream));
-
-    INFO("local gpu write:allocate memory time: {} micro seconds",
-         std::chrono::duration_cast<std::chrono::microseconds>(
-             std::chrono::high_resolution_clock::now() - start)
-             .count());
-
-    if (!ret) {
-        ERROR("Failed to allocate memory");
-        delete task;
-        return OUT_OF_MEMORY;
-    }
-
-    if (task->ptrs.size() == 0) {
-        DEBUG("all keys are duplicated, do not start the async tasks");
-        delete task;
-        send_resp(return_code, NULL, 0);
-        reset_client_read_state();
-        return 0;
-    }
-
-    task->device = meta_req->device();
-    task->stream = cuda_stream;
-    task->event = event;
-    task->type = CUDA_WRITE;
-    task->d_ptr = d_ptr;
-
-    remain_++;
-
-    if (!cuda_future_.valid()) {
-        // initiate the semaphore
-        uv_sem_init(&sem_, 0);
-        cuda_future_ =
-            std::async(std::launch::async, [&]() { this->wait_for_ipc_close(cuda_task_queue_); });
-    }
-    cuda_task_queue_->push(task);
-    uv_sem_post(&sem_);  // wake up thread to clean up
-
-    send_resp(return_code, NULL, 0);
-    reset_client_read_state();
-
-    return 0;
 }
 
 int init_rdma_context(server_config_t config) {
@@ -1090,13 +831,6 @@ void Client::send_resp(int return_code, void *buf, size_t size) {
     uv_write(write_req, (uv_stream_t *)handle_, &wbuf, 1, on_write);
 }
 
-int Client::sync_stream() {
-    send_resp(FINISH, &remain_, sizeof(remain_));
-    // Reset client state
-    reset_client_read_state();
-    return 0;
-}
-
 int Client::check_key(const std::string &key_to_check) {
     int ret;
     // check if the key exists and committed
@@ -1165,20 +899,6 @@ void handle_request(uv_stream_t *stream, client_t *client) {
     int op = client->header_.op;
     // if error_code is not 0, close the connection
     switch (client->header_.op) {
-        case OP_R: {
-            const LocalMetaRequest *request = GetLocalMetaRequest(client->tcp_recv_buffer_);
-            error_code = client->read_cache(request);
-            break;
-        }
-        case OP_W: {
-            const LocalMetaRequest *request = GetLocalMetaRequest(client->tcp_recv_buffer_);
-            error_code = client->write_cache(request);
-            break;
-        }
-        case OP_SYNC: {
-            error_code = client->sync_stream();
-            break;
-        }
         case OP_RDMA_EXCHANGE: {
             memcpy((void *)(&client->remote_info_), client->tcp_recv_buffer_,
                    client->expected_bytes_);
@@ -1216,9 +936,6 @@ void handle_request(uv_stream_t *stream, client_t *client) {
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> elapsed = end - start;
-    // skip print sync log
-    if (op != OP_SYNC)
-        INFO("handle request {} runtime: {} ms", op_name(op), elapsed.count());
 }
 
 void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
@@ -1243,8 +960,7 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
                 if (client->bytes_read_ == FIXED_HEADER_SIZE) {
                     DEBUG("HEADER: op: {}, body_size :{}", client->header_.op,
                           (unsigned int)client->header_.body_size);
-                    if (client->header_.op == OP_R || client->header_.op == OP_W ||
-                        client->header_.op == OP_CHECK_EXIST ||
+                    if (client->header_.op == OP_CHECK_EXIST ||
                         client->header_.op == OP_GET_MATCH_LAST_IDX ||
                         client->header_.op == OP_RDMA_EXCHANGE ||
                         client->header_.op == OP_DELETE_KEYS) {
@@ -1260,9 +976,6 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
                         client->tcp_recv_buffer_ =
                             (char *)realloc(client->tcp_recv_buffer_, client->expected_bytes_);
                         client->state_ = READ_BODY;
-                    }
-                    else if (client->header_.op == OP_SYNC) {
-                        handle_request(stream, client);
                     }
                 }
                 break;

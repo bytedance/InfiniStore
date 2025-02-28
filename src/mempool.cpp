@@ -18,7 +18,7 @@ MemoryPool::MemoryPool(size_t pool_size, size_t block_size, struct ibv_pd* pd)
       mr_(nullptr),
       last_search_position_(0),
       allocated_blocks_(0) {
-    // 计算总的内存块数量
+    // calculate total blocks
     total_blocks_ = pool_size_ / block_size_;
     assert(pool_size % block_size == 0);
 
@@ -31,11 +31,9 @@ MemoryPool::MemoryPool(size_t pool_size, size_t block_size, struct ibv_pd* pd)
         exit(EXIT_FAILURE);
     }
 
-    CHECK_CUDA(cudaHostRegister(pool_, pool_size_, cudaHostRegisterDefault));
-
     INFO("Memory pool allocated at {}", pool_);
 
-    // 注册内存区域
+    // register to RDMA device
     mr_ = ibv_reg_mr(pd_, pool_, pool_size_,
                      IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
     if (!mr_) {
@@ -50,7 +48,7 @@ MemoryPool::~MemoryPool() {
         ibv_dereg_mr(mr_);
     }
     if (pool_) {
-        cudaFreeHost(pool_);
+        free(pool_);
     }
 }
 

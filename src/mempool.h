@@ -2,8 +2,6 @@
 #define MEMORY_POOL_H
 
 #include <assert.h>
-#include <cuda.h>
-#include <cuda_runtime.h>
 #include <infiniband/verbs.h>
 
 #include <cstddef>

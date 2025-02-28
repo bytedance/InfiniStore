@@ -92,26 +92,6 @@ void print_rdma_conn_info(rdma_conn_info_t* info, bool is_remote) {
     }
 }
 
-void print_ipc_handle(cudaIpcMemHandle_t ipc_handle) {
-    std::ostringstream oss;
-    for (int i = 0; i < sizeof(cudaIpcMemHandle_t); i++) {
-        oss << std::hex << std::setw(2) << std::setfill('0')
-            << (int)((unsigned char*)&ipc_handle)[i] << " ";
-    }
-    DEBUG("ipc_handle content: {}", oss.str().c_str());
-}
-
-void compare_ipc_handle(cudaIpcMemHandle_t ipc_handle1, cudaIpcMemHandle_t ipc_handle2) {
-    for (int i = 0; i < sizeof(cudaIpcMemHandle_t); i++) {
-        unsigned char d1 = ((unsigned char*)&ipc_handle1)[i];
-        unsigned char d2 = ((unsigned char*)&ipc_handle2)[i];
-        if (d1 != d2) {
-            INFO("ipc_handle1 is not equal to ipc_handle2\n");
-            return;
-        }
-    }
-}
-
 void signal_handler(int signum) {
     INFO("Interrupt signal ({}) received.", signum);
     boost::stacktrace::stacktrace st;

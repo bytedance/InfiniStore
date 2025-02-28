@@ -5,14 +5,12 @@ import infinistore._infinistore as _infinistore
 import torch
 import os
 import subprocess
-import time
 import asyncio
 from functools import singledispatchmethod
 from typing import Optional, Union, List, Tuple
 
 
 # connection type: default is RDMA
-TYPE_LOCAL_GPU = "LOCAL_GPU"
 TYPE_RDMA = "RDMA"
 # rdma link type
 LINK_ETHERNET = "Ethernet"
@@ -35,7 +33,7 @@ class ClientConfig(_infinistore.ClientConfig):
     ClientConfig is a configuration class for the Infinistore client.
 
     Attributes:
-        connection_type (str): The type of connection to use (e.g., TYPE_LOCAL_GPU, TYPE_RDMA).
+        connection_type (str): The type of connection to use (e.g. TYPE_RDMA).
         host_addr (str): The address of the host.
         dev_name (str): The name of the device (default is "mlx5_1").
         ib_port (int): The port number of the InfiniBand device (default is 1).
@@ -68,7 +66,7 @@ class ClientConfig(_infinistore.ClientConfig):
         )
 
     def verify(self):
-        if self.connection_type not in [TYPE_LOCAL_GPU, TYPE_RDMA]:
+        if self.connection_type not in [TYPE_RDMA]:
             raise Exception("Invalid connection type")
         if self.host_addr == "":
             raise Exception("Host address is empty")
@@ -263,49 +261,21 @@ def check_supported():
     _check_rdma_devices_ibv()
 
 
-class DisableTorchCaching:
-    """
-    Context manager to disable PyTorch CUDA memory caching.
-
-    When this context manager is entered, it sets the environment variable
-    "PYTORCH_NO_CUDA_MEMORY_CACHING" to "1", which disables CUDA memory caching
-    in PyTorch. When the context manager is exited, the environment variable is
-    deleted, restoring the default behavior.
-
-    Usage:
-        with DisableTorchCaching():
-            # Your code here
-    """
-
-    def __enter__(self):
-        os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "1"
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        del os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"]
-        return
-
-
 class InfinityConnection:
     """
-    A class to manage connections and data transfers with an Infinistore instance using either local or RDMA connections.
+    A class to manage connections and data transfers with an Infinistore instance using RDMA connections.
 
     Attributes:
         conn (_infinistore.Connection): The connection object to the Infinistore instance.
-        local_connected (bool): Indicates if connected to a local instance.
         rdma_connected (bool): Indicates if connected to a remote instance via RDMA.
         config (ClientConfig): Configuration object for the connection.
     """
 
-    OP_R = "R"
-    OP_W = "W"
-    OP_SYNC = "S"
     OP_RDMA_READ = "A"
 
     def __init__(self, config: ClientConfig):
         config.verify()
         self.conn = _infinistore.Connection()
-        self.local_connected = False
         self.rdma_connected = False
         self.config = config
         Logger.set_log_level(config.log_level)
@@ -315,7 +285,6 @@ class InfinityConnection:
         Asynchronously establishes a connection based on the configuration.
 
         Raises:
-            Exception: If the connection type is local GPU, as it is not supported in async mode.
             Exception: If the initialization of the remote connection fails.
             Exception: If the setup of the RDMA connection fails.
 
@@ -324,8 +293,6 @@ class InfinityConnection:
 
         This method runs the blocking connection setup in an executor to avoid blocking the event loop.
         """
-        if self.config.connection_type == TYPE_LOCAL_GPU:
-            raise Exception("Local GPU connection is not supported in async mode")
         loop = asyncio.get_running_loop()
 
         def blocking_connect():
@@ -342,14 +309,10 @@ class InfinityConnection:
         Establishes a connection to the Infinistore instance based on the configuration.
 
         Raises:
-            Exception: If already connected to a local instance.
             Exception: If already connected to a remote instance.
             Exception: If failed to initialize remote connection.
-            Exception: If local GPU connection is not to localhost.
             Exception: If failed to setup RDMA connection.
         """
-        if self.local_connected:
-            raise Exception("Already connected to local instance")
         if self.rdma_connected:
             raise Exception("Already connected to remote instance")
 
@@ -358,95 +321,10 @@ class InfinityConnection:
         if ret < 0:
             raise Exception("Failed to initialize remote connection")
 
-        if self.config.connection_type == TYPE_LOCAL_GPU:
-            if self.config.host_addr not in ["127.0.0.1", "localhost"]:
-                raise Exception("Local GPU connection must be to localhost")
-            self.local_connected = True
-        else:
-            ret = self.conn.setup_rdma(self.config)
-            if ret < 0:
-                raise Exception("Failed to setup RDMA connection")
-            self.rdma_connected = True
-
-    def local_gpu_write_cache_single(self, key: str, ptr: int, size: int, **kwargs):
-        """
-        Writes data to the local GPU cache.
-
-        This function writes data to the local GPU cache using the provided key, pointer, and size.
-        It requires a connected local GPU and a valid device ID.
-
-        Args:
-            key (str): The key associated with the data to be written.
-            ptr (int): The pointer to the data in memory.
-            size (int): The size of the data to be written.
-            **kwargs: Additional keyword arguments.
-                device_id (int): The ID of the GPU device to use.
-
-        Raises:
-            Exception: If the local GPU is not connected.
-            Exception: If the key is empty.
-            Exception: If the size is 0.
-            Exception: If the pointer is 0.
-            Exception: If the device_id is not provided in kwargs.
-            Exception: If writing to infinistore fails.
-        """
-        if not self.local_connected:
-            raise Exception("this function is only valid for connected local GPU")
-        if key == "":
-            raise Exception("key is empty")
-        if size == 0:
-            raise Exception("size is 0")
-        if ptr == 0:
-            raise Exception("ptr is 0")
-        if "device_id" not in kwargs:
-            raise Exception("device_id is required for local GPU connection")
-        cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-        if len(cuda_visible_devices) > 0:
-            device_id = int(cuda_visible_devices.split(",")[kwargs["device_id"]])
-        ret = self.conn.rw_local(
-            self.OP_W,
-            [(key, 0)],
-            size,
-            ptr,
-            device_id,
-        )
+        ret = self.conn.setup_rdma(self.config)
         if ret < 0:
-            raise Exception(f"Failed to write to infinistore, ret = {ret}")
-
-    def local_gpu_write_cache(
-        self, cache: torch.Tensor, blocks: List[Tuple[str, int]], page_size: int
-    ):
-        """
-        Writes a tensor to the local GPU cache.
-        Args:
-            cache (torch.Tensor): The tensor to be written to the cache.
-            blocks (List[Tuple[str, int]]): A list of tuples where each tuple contains a key and an offset.
-            page_size (int): The size of each page in the cache.
-        Raises:
-            Exception: If writing to infinistore fails.
-        Returns:
-            int: Returns 0 on success.
-        """
-
-        self._verify(cache)
-        ptr = cache.data_ptr()
-        element_size = cache.element_size()
-        assert self.local_connected
-        blocks_in_bytes = [(key, offset * element_size) for key, offset in blocks]
-        device_id = cache.device.index
-        cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-        if len(cuda_visible_devices) > 0:
-            device_id = int(cuda_visible_devices.split(",")[cache.device.index])
-
-        ret = self.conn.rw_local(
-            self.OP_W,
-            blocks_in_bytes,
-            page_size * element_size,
-            ptr,
-            device_id,
-        )
-        if ret < 0:
-            raise Exception(f"Failed to write to infinistore, ret = {ret}")
+            raise Exception("Failed to setup RDMA connection")
+        self.rdma_connected = True
 
     async def rdma_write_cache_async(
         self, cache: torch.Tensor, offsets: List[int], page_size, remote_blocks: List
@@ -702,8 +580,6 @@ class InfinityConnection:
             raise Exception("size is 0")
         if ptr == 0:
             raise Exception("ptr is 0")
-        if self.local_connected:
-            raise Exception("async read for local GPU is not supported")
 
         loop = asyncio.get_running_loop()
         future = loop.create_future()
@@ -738,14 +614,10 @@ class InfinityConnection:
         size (int): The size of the data to read.
         kwargs: Additional keyword arguments.
 
-        Keyword Arguments:
-        device_id (int): The ID of the device to use for local GPU connection (required if local_connected is True).
-
         Raises:
         Exception: If the key is empty.
         Exception: If the size is 0.
         Exception: If the ptr is 0.
-        Exception: If device_id is not provided when local_connected is True.
         Exception: If not connected to any instance.
         Exception: If the read operation fails.
         """
@@ -755,22 +627,8 @@ class InfinityConnection:
             raise Exception("size is 0")
         if ptr == 0:
             raise Exception("ptr is 0")
-        if self.local_connected and "device_id" not in kwargs:
-            raise Exception("device_id is required for local GPU connection")
         ret = 0
-        if self.local_connected:
-            cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-            if len(cuda_visible_devices) > 0:
-                device_id = int(cuda_visible_devices.split(",")[kwargs["device_id"]])
-            ret = self.conn.rw_local(
-                self.OP_R,
-                [(key, 0)],
-                size,
-                ptr,
-                device_id,
-            )
-
-        elif self.rdma_connected:
+        if self.rdma_connected:
             ret = self.conn.r_rdma(
                 [(key, 0)],
                 size,
@@ -785,7 +643,7 @@ class InfinityConnection:
         self, cache: torch.Tensor, blocks: List[Tuple[str, int]], page_size: int
     ):
         """
-        Reads data from the cache using either local or RDMA connection.
+        Reads data from the cache using either RDMA connection.
 
         Args:
             cache (torch.Tensor): The tensor containing the cache data.
@@ -801,21 +659,7 @@ class InfinityConnection:
         element_size = cache.element_size()
         # each offset should multiply by the element size
         blocks_in_bytes = [(key, offset * element_size) for key, offset in blocks]
-        device_id = cache.device.index
-        cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-        if len(cuda_visible_devices) > 0:
-            device_id = int(cuda_visible_devices.split(",")[cache.device.index])
-        if self.local_connected:
-            ret = self.conn.rw_local(
-                self.OP_R,
-                blocks_in_bytes,
-                page_size * element_size,
-                ptr,
-                device_id,
-            )
-            if ret < 0:
-                raise Exception(f"Failed to read to infinistore, ret = {ret}")
-        elif self.rdma_connected:
+        if self.rdma_connected:
             ret = self.conn.r_rdma(
                 blocks_in_bytes,
                 page_size * element_size,
@@ -837,22 +681,7 @@ class InfinityConnection:
             Exception: If synchronization fails with a negative return code.
         """
         ret = 0
-        if self.local_connected:
-            n = 0
-            timeout = 1  # 1 second timeout
-            while True:
-                ret = self.conn.sync_local()
-                if ret < 0:
-                    raise Exception(f"Failed to sync to infinistore, ret = {ret}")
-                elif ret > 0:
-                    # how many inflight requests
-                    # print(f"waiting for {ret} inflight requests")
-                    if n > timeout * 10000:
-                        raise Exception("Timeout waiting for inflight requests")
-                    time.sleep(ret * 0.0005)
-                else:
-                    return
-        elif self.rdma_connected:
+        if self.rdma_connected:
             # ret = _infinistore.sync_rdma(self.conn)
             ret = self.conn.sync_rdma()
         else:
@@ -863,8 +692,6 @@ class InfinityConnection:
         return
 
     def _verify(self, cache: torch.Tensor):
-        if (not self.rdma_connected) and cache.device.type != "cuda":
-            raise Exception("Tensor must be on CUDA device for local GPU connection")
         if cache.is_contiguous() is False:
             raise Exception("Tensor must be contiguous")
 

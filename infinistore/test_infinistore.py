@@ -7,7 +7,6 @@ import signal
 import subprocess
 import random
 import string
-import contextlib
 import asyncio
 import json
 from multiprocessing import Process
@@ -97,8 +96,7 @@ def get_gpu_count():
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize("new_connection", [True, False])
-@pytest.mark.parametrize("local", [True, False])
-def test_basic_read_write_cache(server, dtype, new_connection, local):
+def test_basic_read_write_cache(server, dtype, new_connection):
     config = infinistore.ClientConfig(
         host_addr="127.0.0.1",
         service_port=92345,
@@ -106,9 +104,7 @@ def test_basic_read_write_cache(server, dtype, new_connection, local):
         dev_name=f"{RDMA_DEV[0]}",
     )
 
-    config.connection_type = (
-        infinistore.TYPE_LOCAL_GPU if local else infinistore.TYPE_RDMA
-    )
+    config.connection_type = infinistore.TYPE_RDMA
 
     conn = infinistore.InfinityConnection(config)
     conn.connect()
@@ -118,18 +114,15 @@ def test_basic_read_write_cache(server, dtype, new_connection, local):
     src = [i for i in range(4096)]
 
     # local GPU write is tricky, we need to disable the pytorch allocator's caching
-    with infinistore.DisableTorchCaching() if local else contextlib.nullcontext():
-        src_tensor = torch.tensor(src, device="cuda:0", dtype=dtype)
+    src_tensor = torch.tensor(src, device="cuda:0", dtype=dtype)
 
     torch.cuda.synchronize(src_tensor.device)
-    if not local:
-        conn.register_mr(src_tensor)
-        element_size = torch._utils._element_size(dtype)
 
-        remote_addrs = conn.allocate_rdma([key], 4096 * element_size)
-        conn.rdma_write_cache(src_tensor, [0], 4096, remote_addrs)
-    else:
-        conn.local_gpu_write_cache(src_tensor, [(key, 0)], 4096)
+    conn.register_mr(src_tensor)
+    element_size = torch._utils._element_size(dtype)
+
+    remote_addrs = conn.allocate_rdma([key], 4096 * element_size)
+    conn.rdma_write_cache(src_tensor, [0], 4096, remote_addrs)
 
     conn.sync()
     conn.close()
@@ -137,10 +130,9 @@ def test_basic_read_write_cache(server, dtype, new_connection, local):
     conn = infinistore.InfinityConnection(config)
     conn.connect()
 
-    with infinistore.DisableTorchCaching() if local else contextlib.nullcontext():
-        dst = torch.zeros(4096, device="cuda:0", dtype=dtype)
-    if not local:
-        conn.register_mr(dst)
+    dst = torch.zeros(4096, device="cuda:0", dtype=dtype)
+
+    conn.register_mr(dst)
     conn.read_cache(dst, [(key, 0)], 4096)
     conn.sync()
     assert torch.equal(src_tensor, dst)
@@ -148,8 +140,7 @@ def test_basic_read_write_cache(server, dtype, new_connection, local):
 
 
 @pytest.mark.parametrize("separated_gpu", [False, True])
-@pytest.mark.parametrize("local", [False, True])
-def test_batch_read_write_cache(server, separated_gpu, local):
+def test_batch_read_write_cache(server, separated_gpu):
     config = infinistore.ClientConfig(
         host_addr="127.0.0.1",
         service_port=92345,
@@ -157,9 +148,8 @@ def test_batch_read_write_cache(server, separated_gpu, local):
         dev_name="RDMA_DEV[0]",
     )
 
-    config.connection_type = (
-        infinistore.TYPE_LOCAL_GPU if local else infinistore.TYPE_RDMA
-    )
+    config.connection_type = infinistore.TYPE_RDMA
+
     # test if we have multiple GPUs
     if separated_gpu:
         if get_gpu_count() >= 2:
@@ -179,35 +169,29 @@ def test_batch_read_write_cache(server, separated_gpu, local):
     block_size = 4096
     src = [i for i in range(num_of_blocks * block_size)]
 
-    with infinistore.DisableTorchCaching() if local else contextlib.nullcontext():
-        src_tensor = torch.tensor(src, device=src_device, dtype=torch.float32)
+    src_tensor = torch.tensor(src, device=src_device, dtype=torch.float32)
     torch.cuda.synchronize(src_tensor.device)
 
     # write/read 3 times
     for i in range(3):
         keys = [generate_random_string(num_of_blocks) for i in range(10)]
         blocks = [(keys[i], i * block_size) for i in range(num_of_blocks)]
-        if not local:
-            conn.register_mr(src_tensor)
-            remote_addrs = conn.allocate_rdma(keys, block_size * 4)
-            conn.rdma_write_cache(
-                src_tensor,
-                [i * block_size for i in range(num_of_blocks)],
-                block_size,
-                remote_addrs,
-            )
-        else:
-            conn.local_gpu_write_cache(src_tensor, blocks, block_size)
+        conn.register_mr(src_tensor)
+        remote_addrs = conn.allocate_rdma(keys, block_size * 4)
+        conn.rdma_write_cache(
+            src_tensor,
+            [i * block_size for i in range(num_of_blocks)],
+            block_size,
+            remote_addrs,
+        )
 
         conn.sync()
 
-        with infinistore.DisableTorchCaching() if local else contextlib.nullcontext():
-            dst = torch.zeros(
-                num_of_blocks * block_size, device=dst_device, dtype=torch.float32
-            )
+        dst = torch.zeros(
+            num_of_blocks * block_size, device=dst_device, dtype=torch.float32
+        )
 
-        if not local:
-            conn.register_mr(dst)
+        conn.register_mr(dst)
         conn.read_cache(dst, blocks, block_size)
         conn.sync()
         # import pdb; pdb.set_trace()
@@ -216,8 +200,7 @@ def test_batch_read_write_cache(server, separated_gpu, local):
 
 
 @pytest.mark.parametrize("num_clients", [2])
-@pytest.mark.parametrize("local", [True, False])
-def test_multiple_clients(num_clients, local):
+def test_multiple_clients(num_clients):
     def run():
         config = infinistore.ClientConfig(
             host_addr="127.0.0.1",
@@ -226,9 +209,7 @@ def test_multiple_clients(num_clients, local):
             dev_name=f"{RDMA_DEV[0]}",
         )
 
-        config.connection_type = (
-            infinistore.TYPE_LOCAL_GPU if local else infinistore.TYPE_RDMA
-        )
+        config.connection_type = infinistore.TYPE_RDMA
 
         conn = infinistore.InfinityConnection(config)
         conn.connect()
@@ -237,19 +218,14 @@ def test_multiple_clients(num_clients, local):
         key = generate_random_string(10)
         src = [i for i in range(4096)]
 
-        # local GPU write is tricky, we need to disable the pytorch allocator's caching
-        with infinistore.DisableTorchCaching() if local else contextlib.nullcontext():
-            src_tensor = torch.tensor(src, device="cuda:0", dtype=torch.float32)
+        src_tensor = torch.tensor(src, device="cuda:0", dtype=torch.float32)
 
         torch.cuda.synchronize(src_tensor.device)
-        if not local:
-            conn.register_mr(src_tensor)
-            element_size = torch._utils._element_size(torch.float32)
+        conn.register_mr(src_tensor)
+        element_size = torch._utils._element_size(torch.float32)
 
-            remote_addrs = conn.allocate_rdma([key], 4096 * element_size)
-            conn.rdma_write_cache(src_tensor, [0], 4096, remote_addrs)
-        else:
-            conn.local_gpu_write_cache(src_tensor, [(key, 0)], 4096)
+        remote_addrs = conn.allocate_rdma([key], 4096 * element_size)
+        conn.rdma_write_cache(src_tensor, [0], 4096, remote_addrs)
 
         conn.sync()
         conn.close()
@@ -257,10 +233,8 @@ def test_multiple_clients(num_clients, local):
         conn = infinistore.InfinityConnection(config)
         conn.connect()
 
-        with infinistore.DisableTorchCaching() if local else contextlib.nullcontext():
-            dst = torch.zeros(4096, device="cuda:0", dtype=torch.float32)
-        if not local:
-            conn.register_mr(dst)
+        dst = torch.zeros(4096, device="cuda:0", dtype=torch.float32)
+        conn.register_mr(dst)
         conn.read_cache(dst, [(key, 0)], 4096)
         conn.sync()
         assert torch.equal(src_tensor, dst)
@@ -324,18 +298,24 @@ def test_key_not_found(server):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="RDMA_DEV[0]",
-        connection_type=infinistore.TYPE_LOCAL_GPU,
+        dev_name=f"{RDMA_DEV[0]}",
+        connection_type=infinistore.TYPE_RDMA,
     )
     conn = infinistore.InfinityConnection(config)
 
-    conn.connect()
-    key = "not_exist_key"
-    src = torch.randn(4096, device="cuda", dtype=torch.float32)
-    # expect raise exception
-    with pytest.raises(Exception):
-        conn.read_cache(src, [(key, 0)], 4096)
-    conn.close()
+    async def run():
+        try:
+            await conn.connect_async()
+            key = "not_exist_key"
+            dst = torch.randn(4096, device="cuda", dtype=torch.float32)
+            conn.register_mr(dst)
+            # expect raise exception
+            with pytest.raises(Exception):
+                await conn.read_cache_async(dst, [(key, 0)], 4096)
+        finally:
+            conn.close()
+
+    asyncio.run(run())
 
 
 def test_upload_cpu_download_gpu(server):
@@ -349,7 +329,9 @@ def test_upload_cpu_download_gpu(server):
     dst_config = infinistore.ClientConfig(
         host_addr="127.0.0.1",
         service_port=92345,
-        connection_type=infinistore.TYPE_LOCAL_GPU,
+        link_type=infinistore.LINK_ETHERNET,
+        dev_name=f"{RDMA_DEV[0]}",
+        connection_type=infinistore.TYPE_RDMA,
     )
     src_conn = infinistore.InfinityConnection(src_config)
     src_conn.connect()
@@ -367,65 +349,53 @@ def test_upload_cpu_download_gpu(server):
     dst_conn.connect()
 
     dst = torch.zeros(4096, dtype=torch.float32, device="cuda:0")
+    dst_conn.register_mr(dst)
     dst_conn.read_cache(dst, [(key, 0)], 4096)
     dst_conn.sync()
     assert torch.equal(src, dst.cpu())
     dst_conn.close()
 
 
-@pytest.mark.parametrize("local", [False])
-def test_deduplicate(server, local):
+def test_deduplicate(server):
     config = infinistore.ClientConfig(
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="RDMA_DEV[0]",
+        dev_name=f"{RDMA_DEV[0]}",
     )
 
-    config.connection_type = (
-        infinistore.TYPE_LOCAL_GPU if local else infinistore.TYPE_RDMA
-    )
+    config.connection_type = infinistore.TYPE_RDMA
 
     conn = infinistore.InfinityConnection(config)
     conn.connect()
 
     key = "duplicate_key"
     src = [i for i in range(4096)]
-    with infinistore.DisableTorchCaching() if local else contextlib.nullcontext():
-        src_tensor = torch.tensor(src, device="cuda:0", dtype=torch.float32)
+    src_tensor = torch.tensor(src, device="cuda:0", dtype=torch.float32)
 
     torch.cuda.synchronize(src_tensor.device)
-    if not local:
-        conn.register_mr(src_tensor)
-        element_size = torch._utils._element_size(torch.float32)
+    conn.register_mr(src_tensor)
+    element_size = torch._utils._element_size(torch.float32)
 
-        remote_addrs = conn.allocate_rdma([key], 4096 * element_size)
-        print(remote_addrs)
-        conn.rdma_write_cache(src_tensor, [0], 4096, remote_addrs)
-    else:
-        conn.local_gpu_write_cache(src_tensor, [(key, 0)], 4096)
+    remote_addrs = conn.allocate_rdma([key], 4096 * element_size)
+    print(remote_addrs)
+    conn.rdma_write_cache(src_tensor, [0], 4096, remote_addrs)
 
     conn.sync()
 
-    with infinistore.DisableTorchCaching() if local else contextlib.nullcontext():
-        src2_tensor = torch.randn(4096, device="cuda:0", dtype=torch.float32)
+    src2_tensor = torch.randn(4096, device="cuda:0", dtype=torch.float32)
 
     # test_deduplicate
-    if not local:
-        conn.register_mr(src2_tensor)
-        element_size = torch._utils._element_size(torch.float32)
+    conn.register_mr(src2_tensor)
+    element_size = torch._utils._element_size(torch.float32)
 
-        remote_addrs = conn.allocate_rdma([key], 4096 * element_size)
-        conn.rdma_write_cache(src_tensor, [0], 4096, remote_addrs)
-    else:
-        conn.local_gpu_write_cache(src_tensor, [(key, 0)], 4096)
+    remote_addrs = conn.allocate_rdma([key], 4096 * element_size)
+    conn.rdma_write_cache(src_tensor, [0], 4096, remote_addrs)
+
     conn.sync()
 
-    if not local:
-        dst_tensor = torch.zeros(4096, dtype=torch.float32, device="cpu")
-        conn.register_mr(dst_tensor)
-    else:
-        dst_tensor = torch.zeros(4096, dtype=torch.float32, device="cuda:0")
+    dst_tensor = torch.zeros(4096, dtype=torch.float32, device="cpu")
+    conn.register_mr(dst_tensor)
 
     conn.read_cache(dst_tensor, [(key, 0)], 4096)
     conn.sync()
@@ -556,10 +526,7 @@ def test_benchmark(server):
 
 
 @pytest.mark.parametrize("test_dtype", [torch.float32])
-@pytest.mark.parametrize(
-    "test_conn_type", [infinistore.TYPE_RDMA, infinistore.TYPE_LOCAL_GPU]
-)
-def test_delete_keys(server, test_dtype, test_conn_type):
+def test_delete_keys(server, test_dtype):
     BLOCK_SIZE = 4096
     # The count of elements in a key indexed region
     BLOB_SIZE = 1024
@@ -570,7 +537,7 @@ def test_delete_keys(server, test_dtype, test_conn_type):
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
         dev_name=f"{RDMA_DEV[0]}",
-        connection_type=test_conn_type,
+        connection_type=infinistore.TYPE_RDMA,
     )
     conn = infinistore.InfinityConnection(config)
     conn.connect()
@@ -579,20 +546,16 @@ def test_delete_keys(server, test_dtype, test_conn_type):
     # Generate the names of the keys
     keys = [generate_random_string(10) for i in range(KEY_COUNT)]
 
-    if test_conn_type == infinistore.TYPE_RDMA:
-        conn.register_mr(src_tensor)
-        # Allocate BLOB_SIZE elements for each key
-        remote_addrs = conn.allocate_rdma(keys, BLOB_SIZE)
+    conn.register_mr(src_tensor)
+    # Allocate BLOB_SIZE elements for each key
+    remote_addrs = conn.allocate_rdma(keys, BLOB_SIZE)
 
-        conn.rdma_write_cache(
-            src_tensor,
-            [i * BLOB_SIZE for i in range(KEY_COUNT)],
-            BLOB_SIZE,
-            remote_addrs,
-        )
-    else:
-        offsets = [i * BLOB_SIZE for i in range(KEY_COUNT)]
-        conn.local_gpu_write_cache(src_tensor, list(zip(keys, offsets)), BLOB_SIZE)
+    conn.rdma_write_cache(
+        src_tensor,
+        [i * BLOB_SIZE for i in range(KEY_COUNT)],
+        BLOB_SIZE,
+        remote_addrs,
+    )
 
     torch.cuda.synchronize(src_tensor.device)
     conn.sync()
