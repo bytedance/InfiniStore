@@ -323,7 +323,7 @@ class InfinityConnection:
 
         ret = self.conn.setup_rdma(self.config)
         if ret < 0:
-            raise Exception("Failed to setup RDMA connection")
+            raise Exception(f"Failed to write to infinistore, ret = {ret}")
         self.rdma_connected = True
 
     async def rdma_write_cache_async(
