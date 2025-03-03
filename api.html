@@ -44,12 +44,10 @@
               <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="design.html">Design and Architecture</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">API Reference</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="#infinistore.DisableTorchCaching"><code class="docutils literal notranslate"><span class="pre">DisableTorchCaching</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#infinistore.InfiniStoreException"><code class="docutils literal notranslate"><span class="pre">InfiniStoreException</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#infinistore.InfiniStoreKeyNotFound"><code class="docutils literal notranslate"><span class="pre">InfiniStoreKeyNotFound</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#infinistore.InfinityConnection"><code class="docutils literal notranslate"><span class="pre">InfinityConnection</span></code></a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.conn"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.conn</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.local_connected"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.local_connected</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.rdma_connected"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.rdma_connected</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.config"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.config</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.allocate_rdma"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.allocate_rdma()</span></code></a></li>
@@ -60,8 +58,6 @@
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.connect_async"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.connect_async()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.delete_keys"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.delete_keys()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.get_match_last_index"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.get_match_last_index()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.local_gpu_write_cache"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.local_gpu_write_cache()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.local_gpu_write_cache_single"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.local_gpu_write_cache_single()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.rdma_write_cache"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.rdma_write_cache()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.rdma_write_cache_async"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.rdma_write_cache_async()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#infinistore.InfinityConnection.rdma_write_cache_single"><code class="docutils literal notranslate"><span class="pre">InfinityConnection.rdma_write_cache_single()</span></code></a></li>
@@ -104,23 +100,6 @@
              
   <section id="module-infinistore">
 <span id="api-reference"></span><h1>API Reference<a class="headerlink" href="#module-infinistore" title="Permalink to this heading"></a></h1>
-<dl class="py class">
-<dt class="sig sig-object py" id="infinistore.DisableTorchCaching">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">infinistore.</span></span><span class="sig-name descname"><span class="pre">DisableTorchCaching</span></span><a class="headerlink" href="#infinistore.DisableTorchCaching" title="Permalink to this definition"></a></dt>
-<dd><p>Context manager to disable PyTorch CUDA memory caching.</p>
-<p>When this context manager is entered, it sets the environment variable
-“PYTORCH_NO_CUDA_MEMORY_CACHING” to “1”, which disables CUDA memory caching
-in PyTorch. When the context manager is exited, the environment variable is
-deleted, restoring the default behavior.</p>
-<dl class="simple">
-<dt>Usage:</dt><dd><dl class="simple">
-<dt>with DisableTorchCaching():</dt><dd><p># Your code here</p>
-</dd>
-</dl>
-</dd>
-</dl>
-</dd></dl>
-
 <dl class="py exception">
 <dt class="sig sig-object py" id="infinistore.InfiniStoreException">
 <em class="property"><span class="pre">exception</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">infinistore.</span></span><span class="sig-name descname"><span class="pre">InfiniStoreException</span></span><a class="headerlink" href="#infinistore.InfiniStoreException" title="Permalink to this definition"></a></dt>
@@ -134,7 +113,7 @@ deleted, restoring the default behavior.</p>
 <dl class="py class">
 <dt class="sig sig-object py" id="infinistore.InfinityConnection">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">infinistore.</span></span><span class="sig-name descname"><span class="pre">InfinityConnection</span></span><a class="headerlink" href="#infinistore.InfinityConnection" title="Permalink to this definition"></a></dt>
-<dd><p>A class to manage connections and data transfers with an Infinistore instance using either local or RDMA connections.</p>
+<dd><p>A class to manage connections and data transfers with an Infinistore instance using RDMA connections.</p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="infinistore.InfinityConnection.conn">
 <span class="sig-name descname"><span class="pre">conn</span></span><a class="headerlink" href="#infinistore.InfinityConnection.conn" title="Permalink to this definition"></a></dt>
@@ -142,17 +121,6 @@ deleted, restoring the default behavior.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>_infinistore.Connection</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="infinistore.InfinityConnection.local_connected">
-<span class="sig-name descname"><span class="pre">local_connected</span></span><a class="headerlink" href="#infinistore.InfinityConnection.local_connected" title="Permalink to this definition"></a></dt>
-<dd><p>Indicates if connected to a local instance.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>bool</p>
 </dd>
 </dl>
 </dd></dl>
@@ -265,10 +233,8 @@ invoking a callback function from the C++ code.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Raises<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>Exception</strong> – If already connected to a local instance.</p></li>
 <li><p><strong>Exception</strong> – If already connected to a remote instance.</p></li>
 <li><p><strong>Exception</strong> – If failed to initialize remote connection.</p></li>
-<li><p><strong>Exception</strong> – If local GPU connection is not to localhost.</p></li>
 <li><p><strong>Exception</strong> – If failed to setup RDMA connection.</p></li>
 </ul>
 </dd>
@@ -282,7 +248,6 @@ invoking a callback function from the C++ code.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Raises<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>Exception</strong> – If the connection type is local GPU, as it is not supported in async mode.</p></li>
 <li><p><strong>Exception</strong> – If the initialization of the remote connection fails.</p></li>
 <li><p><strong>Exception</strong> – If the setup of the RDMA connection fails.</p></li>
 </ul>
@@ -331,58 +296,6 @@ invoking a callback function from the C++ code.</p>
 </dd>
 <dt class="field-even">Raises<span class="colon">:</span></dt>
 <dd class="field-even"><p><strong>Exception</strong> – If no match is found (i.e., if the return value is negative).</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="infinistore.InfinityConnection.local_gpu_write_cache">
-<span class="sig-name descname"><span class="pre">local_gpu_write_cache</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cache</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Tensor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">blocks</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">int</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">page_size</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#infinistore.InfinityConnection.local_gpu_write_cache" title="Permalink to this definition"></a></dt>
-<dd><p>Writes a tensor to the local GPU cache.
-:param cache: The tensor to be written to the cache.
-:type cache: torch.Tensor
-:param blocks: A list of tuples where each tuple contains a key and an offset.
-:type blocks: List[Tuple[str, int]]
-:param page_size: The size of each page in the cache.
-:type page_size: int</p>
-<dl class="field-list simple">
-<dt class="field-odd">Raises<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>Exception</strong> – If writing to infinistore fails.</p>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>Returns 0 on success.</p>
-</dd>
-<dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>int</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="infinistore.InfinityConnection.local_gpu_write_cache_single">
-<span class="sig-name descname"><span class="pre">local_gpu_write_cache_single</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">key</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ptr</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">size</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#infinistore.InfinityConnection.local_gpu_write_cache_single" title="Permalink to this definition"></a></dt>
-<dd><p>Writes data to the local GPU cache.</p>
-<p>This function writes data to the local GPU cache using the provided key, pointer, and size.
-It requires a connected local GPU and a valid device ID.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>key</strong> (<em>str</em>) – The key associated with the data to be written.</p></li>
-<li><p><strong>ptr</strong> (<em>int</em>) – The pointer to the data in memory.</p></li>
-<li><p><strong>size</strong> (<em>int</em>) – The size of the data to be written.</p></li>
-<li><p><strong>**kwargs</strong> – Additional keyword arguments.
-device_id (int): The ID of the GPU device to use.</p></li>
-</ul>
-</dd>
-<dt class="field-even">Raises<span class="colon">:</span></dt>
-<dd class="field-even"><ul class="simple">
-<li><p><strong>Exception</strong> – If the local GPU is not connected.</p></li>
-<li><p><strong>Exception</strong> – If the key is empty.</p></li>
-<li><p><strong>Exception</strong> – If the size is 0.</p></li>
-<li><p><strong>Exception</strong> – If the pointer is 0.</p></li>
-<li><p><strong>Exception</strong> – If the device_id is not provided in kwargs.</p></li>
-<li><p><strong>Exception</strong> – If writing to infinistore fails.</p></li>
-</ul>
 </dd>
 </dl>
 </dd></dl>
@@ -503,7 +416,7 @@ It ensures that the RDMA connection is established and the input parameters are 
 <dl class="py method">
 <dt class="sig sig-object py" id="infinistore.InfinityConnection.read_cache">
 <span class="sig-name descname"><span class="pre">read_cache</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cache</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Tensor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">blocks</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">int</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">page_size</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#infinistore.InfinityConnection.read_cache" title="Permalink to this definition"></a></dt>
-<dd><p>Reads data from the cache using either local or RDMA connection.</p>
+<dd><p>Reads data from the cache using either RDMA connection.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
@@ -555,13 +468,10 @@ key (str): The key of the cache entry to read.
 ptr (int): The pointer to the memory location where the data should be read.
 size (int): The size of the data to read.
 kwargs: Additional keyword arguments.</p>
-<p>Keyword Arguments:
-device_id (int): The ID of the device to use for local GPU connection (required if local_connected is True).</p>
 <p>Raises:
 Exception: If the key is empty.
 Exception: If the size is 0.
 Exception: If the ptr is 0.
-Exception: If device_id is not provided when local_connected is True.
 Exception: If not connected to any instance.
 Exception: If the read operation fails.</p>
 </dd></dl>
