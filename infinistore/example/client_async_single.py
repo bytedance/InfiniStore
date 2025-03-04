@@ -51,7 +51,7 @@ async def main():
     except infinistore.InfiniStoreKeyNotFound:
         print("Key not found")
 
-    # assert src == dst
+    assert src == dst
 
     rdma_conn.close()
 

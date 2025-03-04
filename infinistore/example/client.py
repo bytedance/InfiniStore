@@ -64,13 +64,16 @@ if __name__ == "__main__":
         dev_name="mlx5_0",
     )
     rdma_conn = InfinityConnection(config)
-    rdma_conn.connect()
-    m = [
-        ("cpu", "cuda:0"),
-        ("cuda:0", "cuda:1"),
-        ("cuda:0", "cpu"),
-        ("cpu", "cpu"),
-    ]
-    for src, dst in m:
-        print(f"rdma connection: {src} -> {dst}")
-        run(rdma_conn, src, dst)
+    try:
+        rdma_conn.connect()
+        m = [
+            ("cpu", "cuda:0"),
+            ("cuda:0", "cuda:1"),
+            ("cuda:0", "cpu"),
+            ("cpu", "cpu"),
+        ]
+        for src, dst in m:
+            print(f"rdma connection: {src} -> {dst}")
+            run(rdma_conn, src, dst)
+    finally:
+        rdma_conn.close()

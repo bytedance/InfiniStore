@@ -326,19 +326,34 @@ void Connection::cq_handler() {
                         release_send_buffer((SendBuffer *)wc[i].wr_id);
                     }
                     else if (wc[i].opcode == IBV_WC_RECV) {  // allocate msg recved.
-                        INFO("rdma allocated recv {}", (uintptr_t)wc[i].wr_id);
-                        auto *f = reinterpret_cast<std::function<void()> *>(wc[i].wr_id);
-                        (*f)();
-                        delete f;
-                    }
-                    else if (wc[i].opcode == IBV_WC_RECV_RDMA_WITH_IMM) {  // read cache done
-                        uint32_t imm_data = ntohl(wc[i].imm_data);
-                        INFO("read cache done: Received IMM, imm_data: {}", imm_data);
-                        auto *info = reinterpret_cast<rdma_read_commit_info *>(wc[i].wr_id);
-                        info->callback(imm_data);
-                        delete info;
-                        rdma_inflight_count_--;
-                        cv_.notify_all();
+                        rdma_info_base *ptr = reinterpret_cast<rdma_info_base *>(wc[i].wr_id);
+                        switch (ptr->get_wr_type()) {
+                            case WrType::ALLOCATE: {
+                                auto *info = reinterpret_cast<rdma_allocate_info *>(ptr);
+                                info->callback();
+                                delete info;
+                                break;
+                            }
+                            case WrType::READ_COMMIT: {
+                                INFO("read cache done: Received IMM, imm_data: {}", wc[i].imm_data);
+                                auto *info = reinterpret_cast<rdma_read_commit_info *>(ptr);
+                                info->callback(wc[i].imm_data);
+                                delete info;
+                                rdma_inflight_count_--;
+                                cv_.notify_all();
+                                break;
+                            }
+                            case WrType::WRITE_ACK: {
+                                INFO("write cache done: Received IMM, imm_data: {}",
+                                     wc[i].imm_data);
+                                auto *info = reinterpret_cast<rdma_write_commit_info *>(ptr);
+                                info->callback();
+                                delete info;
+                                rdma_inflight_count_--;
+                                cv_.notify_all();
+                                break;
+                            }
+                        }
                     }
                     else if (wc[i].opcode == IBV_WC_RDMA_WRITE) {  // write cache done
 
@@ -382,6 +397,9 @@ void Connection::cq_handler() {
                                 builder, 0, 0, 0, remote_addrs_offset, OP_RDMA_WRITE_COMMIT);
                             builder.Finish(req);
 
+                            // recv RDMA COMMIT's ACK from server
+                            post_recv(NULL, info);
+
                             // send RDMA COMMIT msg to server
                             struct ibv_sge sge = {0};
                             struct ibv_send_wr wr = {0};
@@ -405,20 +423,6 @@ void Connection::cq_handler() {
 
                             // release lock before callback to prevent deadlock
                             lock.unlock();
-
-                            info->callback();
-                            delete info;
-
-                            // FIXME:
-                            // notify until server commit the keys
-                            // if we use the same connection, it is safe for following code to read
-                            // keys. however, if we use a different connection, we need to wait for
-                            // server to COMMIT the keys and send ACK back. In real world, DECODE
-                            // node will try to get key when conn.sync() is done, I just cross
-                            // fingers to hope that server will commit the keys before DECODE node
-                            // starts.
-                            rdma_inflight_count_--;
-                            cv_.notify_all();
                         }
                     }
                     else {
@@ -816,6 +820,27 @@ std::vector<remote_block_t> *Connection::allocate_rdma(std::vector<std::string> 
     return ret_blocks;
 }
 
+void Connection::post_recv(struct ibv_sge *recv_sge, rdma_info_base *info) {
+    struct ibv_recv_wr recv_wr = {0};
+    struct ibv_recv_wr *bad_recv_wr = NULL;
+
+    recv_wr.wr_id = (uintptr_t)info;
+    if (recv_sge != NULL) {
+        recv_wr.next = NULL;
+        recv_wr.sg_list = recv_sge;
+        recv_wr.num_sge = 1;
+    }
+    else {
+        recv_wr.next = NULL;
+        recv_wr.sg_list = NULL;
+        recv_wr.num_sge = 0;
+    }
+
+    int ret = ibv_post_recv(qp_, &recv_wr, &bad_recv_wr);
+    if (ret) {
+        ERROR("Failed to post recv wr :{}", strerror(ret));
+    }
+}
 // send a message to allocate memory and return the address
 int Connection::allocate_rdma_async(
     std::vector<std::string> &keys, int block_size,
@@ -840,8 +865,7 @@ int Connection::allocate_rdma_async(
     recv_sge.length = PROTOCOL_BUFFER_SIZE;
     recv_sge.lkey = recv_mr_->lkey;
 
-    // build a new callback function:
-    auto *f_ptr = new std::function<void()>([this, callback]() {
+    auto *info = new rdma_allocate_info([this, callback]() {
         const RdmaAllocateResponse *resp = GetRdmaAllocateResponse(recv_buffer_);
         INFO("Received allocate response, #keys: {}", resp->blocks()->size());
 
@@ -856,17 +880,11 @@ int Connection::allocate_rdma_async(
         }
         callback(blocks, resp->error_code());
     });
+    // build a new callback function:
 
-    recv_wr = {
-        .wr_id = (uintptr_t)f_ptr,
-        .next = NULL,
-        .sg_list = &recv_sge,
-        .num_sge = 1,
-    };
-    ret = ibv_post_recv(qp_, &recv_wr, &bad_recv_wr);
-    if (ret) {
-        ERROR("Failed to post RDMA recv :{}", strerror(ret));
-        return -1;
+    {
+        std::unique_lock<std::mutex> lock(rdma_post_send_mutex_);
+        post_recv(&recv_sge, info);
     }
 
     // Send RDMA request
@@ -1051,7 +1069,7 @@ int Connection::w_rdma_async(unsigned long *p_offsets, size_t offsets_len, int b
 
 int Connection::r_rdma(std::vector<block_t> &blocks, int block_size, void *base_ptr) {
     return r_rdma_async(blocks, block_size, base_ptr, [](unsigned int code) {
-        if (code != 0) {
+        if (code != FINISH) {
             ERROR("Failed to read cache, error code: {}", code);
         }
     });
@@ -1070,27 +1088,10 @@ int Connection::r_rdma_async(std::vector<block_t> &blocks, int block_size, void 
     struct ibv_mr *mr = local_mr_[(uintptr_t)base_ptr];
     assert(mr != NULL);
 
-    // recv ACK for whole batch.
-    struct ibv_sge recv_sge = {
-        .addr = (uintptr_t)recv_buffer_,
-        .length = 0,
-        .lkey = recv_mr_->lkey,
-    };
-
     auto *info = new rdma_read_commit_info([callback](unsigned int code) { callback(code); });
-
-    struct ibv_recv_wr recv_wr = {
-        .wr_id = (uintptr_t)info,
-        .next = NULL,
-        .sg_list = &recv_sge,
-        .num_sge = 1,
-    };
-
-    struct ibv_recv_wr *bad_wr_recv = NULL;
-
-    int ret = ibv_post_recv(qp_, &recv_wr, &bad_wr_recv);
-    if (ret) {
-        ERROR("Failed to post RDMA recv :{}", strerror(ret));
+    {
+        std::unique_lock<std::mutex> lock(rdma_post_send_mutex_);
+        post_recv(NULL, info);
     }
 
     std::vector<std::string> keys;
@@ -1134,6 +1135,7 @@ int Connection::r_rdma_async(std::vector<block_t> &blocks, int block_size, void 
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_SIGNALED;
 
+    int ret;
     {
         std::unique_lock<std::mutex> lock(rdma_post_send_mutex_);
         ret = ibv_post_send(qp_, &wr, &bad_wr);

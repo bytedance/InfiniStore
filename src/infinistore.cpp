@@ -207,23 +207,19 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                 switch (request->op()) {
                     case OP_RDMA_READ: {
                         int ret = read_rdma_cache(request);
-                        if (ret != 0) {
-                            // send an error code back
-                            struct ibv_send_wr wr, *bad_wr = NULL;
-                            memset(&wr, 0, sizeof(wr));
-                            wr.wr_id = 1;
-                            wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-                            wr.imm_data = htonl(ret);
-                            wr.send_flags = 0;
-                            wr.wr.rdma.remote_addr = request->remote_addrs()->Get(0);
-                            wr.wr.rdma.rkey = request->rkey();
-                            // FIXME: some RDMA provider may not support NULL sg_list
-                            wr.sg_list = NULL;
-                            wr.num_sge = 0;
-                            int ret = ibv_post_send(qp_, &wr, &bad_wr);
-                            if (ret) {
-                                ERROR("Failed to send WITH_IMM message: {}", ret);
-                            }
+                        // send an error code back
+                        struct ibv_send_wr wr = {0};
+                        struct ibv_send_wr *bad_wr = NULL;
+                        wr.wr_id = 1;
+                        wr.opcode = IBV_WR_SEND_WITH_IMM;
+                        wr.imm_data = ret;
+                        wr.send_flags = 0;
+                        wr.sg_list = NULL;
+                        wr.num_sge = 0;
+                        wr.next = NULL;
+                        ret = ibv_post_send(qp_, &wr, &bad_wr);
+                        if (ret) {
+                            ERROR("Failed to send WITH_IMM message: {}", strerror(ret));
                         }
                         break;
                     }
@@ -249,6 +245,21 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                             }
                             it->second->committed = true;
                             inflight_rdma_writes.erase(it);
+                        }
+
+                        // send ACK
+                        struct ibv_send_wr wr = {0};
+                        struct ibv_send_wr *bad_wr = NULL;
+                        wr.wr_id = 1;
+                        wr.opcode = IBV_WR_SEND_WITH_IMM;
+                        wr.imm_data = 1234;
+                        wr.send_flags = 0;
+                        wr.sg_list = NULL;
+                        wr.num_sge = 0;
+                        wr.next = NULL;
+                        int ret = ibv_post_send(qp_, &wr, &bad_wr);
+                        if (ret) {
+                            ERROR("Failed to send WITH_IMM message: {}", strerror(ret));
                         }
                         DEBUG("inflight_rdma_kv_map size: {}", inflight_rdma_writes.size());
                         break;
@@ -460,9 +471,7 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         sges[num_wr].lkey = mm->get_lkey((*inflight_rdma_reads)[i]->pool_idx);
 
         wrs[num_wr].wr_id = 0;
-        wrs[num_wr].opcode = (i == remote_meta_req->keys()->size() - 1) ? IBV_WR_RDMA_WRITE_WITH_IMM
-                                                                        : IBV_WR_RDMA_WRITE;
-        wrs[num_wr].imm_data = 0;
+        wrs[num_wr].opcode = IBV_WR_RDMA_WRITE;
         wrs[num_wr].sg_list = &sges[num_wr];
         wrs[num_wr].num_sge = 1;
         wrs[num_wr].wr.rdma.remote_addr = remote_meta_req->remote_addrs()->Get(i);
@@ -516,7 +525,7 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         }
     }
 
-    return 0;
+    return FINISH;
 }
 
 // FIXME:

@@ -534,7 +534,7 @@ class InfinityConnection:
                 loop.call_soon_threadsafe(
                     future.set_exception, InfiniStoreKeyNotFound("some keys not found")
                 )
-            elif code != 0:
+            elif code != 200:
                 loop.call_soon_threadsafe(
                     future.set_exception,
                     Exception(f"Failed to read to infinistore, ret = {code}"),
@@ -589,7 +589,7 @@ class InfinityConnection:
                 loop.call_soon_threadsafe(
                     future.set_exception, InfiniStoreKeyNotFound(f"Key {key} not found")
                 )
-            elif code != 0:
+            elif code != 200:
                 loop.call_soon_threadsafe(
                     future.set_exception,
                     Exception(f"Failed to read to infinistore, ret = {code}"),

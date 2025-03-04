@@ -31,6 +31,48 @@ struct SendBuffer {
     ~SendBuffer();
 };
 
+enum class WrType {
+    BASE,
+    ALLOCATE,
+    READ_COMMIT,
+    WRITE_ACK,
+};
+
+struct rdma_info_base {
+   protected:
+    WrType wr_type;
+
+   public:
+    rdma_info_base(WrType wr_type) : wr_type(wr_type) {}
+    virtual ~rdma_info_base() = default;
+    WrType get_wr_type() const { return wr_type; }
+};
+
+struct rdma_allocate_info : rdma_info_base {
+    std::function<void()> callback;
+    rdma_allocate_info(std::function<void()> callback)
+        : rdma_info_base(WrType::ALLOCATE), callback(callback) {}
+};
+
+struct rdma_read_commit_info : rdma_info_base {
+    // call back function.
+    std::function<void(unsigned int)> callback;
+    rdma_read_commit_info(std::function<void(unsigned int)> callback)
+        : rdma_info_base(WrType::READ_COMMIT), callback(callback) {}
+};
+
+struct rdma_write_commit_info : rdma_info_base {
+    // call back function.
+    std::function<void()> callback;
+    // the number of blocks that have been written.
+    std::vector<uintptr_t> remote_addrs;
+
+    rdma_write_commit_info(std::function<void()> callback, int n)
+        : rdma_info_base(WrType::WRITE_ACK), callback(callback), remote_addrs() {
+        remote_addrs.reserve(n);
+    }
+};
+
 class Connection {
     // tcp socket
     int sock_ = 0;
@@ -119,28 +161,12 @@ class Connection {
     int exchange_conn_info();
     int init_rdma_resources(client_config_t config);
 
+    void post_recv(struct ibv_sge *recv_sge, rdma_info_base *info);
+
     void cq_handler();
     // TODO: refactor to c++ style
     SendBuffer *get_send_buffer();
     void release_send_buffer(SendBuffer *buffer);
-};
-
-struct rdma_read_commit_info {
-    // call back function.
-    std::function<void(unsigned int)> callback;
-    rdma_read_commit_info(std::function<void(unsigned int)> callback) : callback(callback) {}
-};
-
-struct rdma_write_commit_info {
-    // call back function.
-    std::function<void()> callback;
-    // the number of blocks that have been written.
-    std::vector<uintptr_t> remote_addrs;
-
-    rdma_write_commit_info(std::function<void()> callback, int n)
-        : callback(callback), remote_addrs() {
-        remote_addrs.reserve(n);
-    }
 };
 
 #endif  // LIBINFINISTORE_H
