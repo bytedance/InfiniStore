@@ -409,12 +409,12 @@ class InfinityConnection:
         if ptr == 0:
             raise Exception("ptr is 0")
 
+        await self.semaphore.acquire()
+
         remote_addrs = await self.allocate_rdma_async([key], size)
 
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-
-        await self.semaphore.acquire()
 
         def _callback():
             loop.call_soon_threadsafe(future.set_result, 0)
