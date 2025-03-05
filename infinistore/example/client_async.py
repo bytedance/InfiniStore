@@ -41,15 +41,19 @@ async def main():
         remote_addr = await rdma_conn.allocate_rdma_async(keys, 1024 * 4)
         print(f"remote addrs is {remote_addr}")
 
-        await rdma_conn.rdma_write_cache_async(
-            src_tensor, [0, 1024], 1024, remote_addr[:2]
-        )
-        await rdma_conn.rdma_write_cache_async(
-            src_tensor, [2048], 1024, remote_addr[2:]
-        )
+        # await rdma_conn.rdma_write_cache_async(
+        #    src_tensor, [0, 1024], 1024, remote_addr[:2]
+        # )
+        # await rdma_conn.rdma_write_cache_async(
+        #    src_tensor, [2048], 1024, remote_addr[2:]
+        # )
 
-        # await asyncio.gather(rdma_conn.rdma_write_cache_async(src_tensor, [0, 1024], 1024, remote_addr[:2]),
-        #                rdma_conn.rdma_write_cache_async(src_tensor, [2048], 1024, remote_addr[2:]))
+        await asyncio.gather(
+            rdma_conn.rdma_write_cache_async(
+                src_tensor, [0, 1024], 1024, remote_addr[:2]
+            ),
+            rdma_conn.rdma_write_cache_async(src_tensor, [2048], 1024, remote_addr[2:]),
+        )
 
         await rdma_conn.read_cache_async(
             dst_tensor, [(keys[0], 0), (keys[1], 1024), (keys[2], 2048)], 1024

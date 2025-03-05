@@ -278,6 +278,9 @@ class InfinityConnection:
         self.conn = _infinistore.Connection()
         self.rdma_connected = False
         self.config = config
+
+        # used for async io
+        self.semaphore = asyncio.BoundedSemaphore(32)
         Logger.set_log_level(config.log_level)
 
     async def connect_async(self):
@@ -357,8 +360,11 @@ class InfinityConnection:
 
         future = loop.create_future()
 
+        await self.semaphore.acquire()
+
         def _callback():
             loop.call_soon_threadsafe(future.set_result, 0)
+            self.semaphore.release()
 
         self.conn.w_rdma_async(
             offsets_in_bytes,
@@ -408,8 +414,11 @@ class InfinityConnection:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
+        await self.semaphore.acquire()
+
         def _callback():
             loop.call_soon_threadsafe(future.set_result, 0)
+            self.semaphore.release()
 
         ret = self.conn.w_rdma_async([0], size, remote_addrs, ptr, _callback)
         if ret < 0:
@@ -529,6 +538,8 @@ class InfinityConnection:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
+        await self.semaphore.acquire()
+
         def _callback(code):
             if code == 404:
                 loop.call_soon_threadsafe(
@@ -541,6 +552,7 @@ class InfinityConnection:
                 )
             else:
                 loop.call_soon_threadsafe(future.set_result, code)
+            self.semaphore.release()
 
         ret = self.conn.r_rdma_async(
             blocks_in_bytes,
@@ -584,6 +596,8 @@ class InfinityConnection:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
+        await self.semaphore.acquire()
+
         def _callback(code):
             if code == 404:
                 loop.call_soon_threadsafe(
@@ -596,6 +610,7 @@ class InfinityConnection:
                 )
             else:
                 loop.call_soon_threadsafe(future.set_result, code)
+            self.semaphore.release()
 
         ret = self.conn.r_rdma_async([(key, 0)], size, ptr, _callback)
 
@@ -682,7 +697,6 @@ class InfinityConnection:
         """
         ret = 0
         if self.rdma_connected:
-            # ret = _infinistore.sync_rdma(self.conn)
             ret = self.conn.sync_rdma()
         else:
             raise Exception("Not connected to any instance")
