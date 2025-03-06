@@ -40,8 +40,6 @@ ibv_mtu active_mtu;
 
 // indicate if the MM extend is in flight
 bool extend_in_flight = false;
-// indicate the number of cudaIpcOpenMemHandle
-std::atomic<unsigned int> opened_ipc{0};
 
 std::unordered_map<uintptr_t, boost::intrusive_ptr<PTR>> inflight_rdma_writes;
 
@@ -328,6 +326,14 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
     }
 }
 
+void add_mempool(uv_work_t *req) { mm->add_mempool(pd); }
+
+void add_mempool_completion(uv_work_t *req, int status) {
+    extend_in_flight = false;
+    mm->need_extend = false;
+    delete req;
+}
+
 int Client::allocate_rdma(const RemoteMetaRequest *req) {
     INFO("do allocate_rdma...");
 
@@ -370,6 +376,13 @@ int Client::allocate_rdma(const RemoteMetaRequest *req) {
         ERROR("Failed to allocate memory");
         error_code = OUT_OF_MEMORY;
         blocks.clear();
+    }
+
+    if (global_config.auto_increase && mm->need_extend && !extend_in_flight) {
+        INFO("Extend another mempool");
+        uv_work_t *req = new uv_work_t();
+        uv_queue_work(loop, req, add_mempool, add_mempool_completion);
+        extend_in_flight = true;
     }
 
     auto resp = CreateRdmaAllocateResponseDirect(builder, &blocks, error_code);
@@ -561,19 +574,6 @@ void on_write(uv_write_t *req, int status) {
         uv_close((uv_handle_t *)req->handle, on_close);
     }
     free(req);
-}
-
-void add_mempool(uv_work_t *req) {
-    while (opened_ipc > 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    mm->add_mempool(pd);
-}
-
-void add_mempool_completion(uv_work_t *req, int status) {
-    extend_in_flight = false;
-    mm->need_extend = false;
-    delete req;
 }
 
 int init_rdma_context(server_config_t config) {
