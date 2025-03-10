@@ -96,6 +96,8 @@ struct Client {
 
     void cq_poll_handle(uv_poll_t *handle, int status, int events);
     int read_rdma_cache(const RemoteMetaRequest *req);
+    int write_rdma_cache(const RemoteMetaRequest *req);
+    void post_ack(int return_code);
     int allocate_rdma(const RemoteMetaRequest *req);
     // send response to client through TCP
     void send_resp(int return_code, void *buf, size_t size);
@@ -299,6 +301,23 @@ int Client::tcp_payload_request(const TCPPayloadRequest *req) {
     return 0;
 }
 
+void Client::post_ack(int return_code) {
+    // send an error code back
+    struct ibv_send_wr wr = {0};
+    struct ibv_send_wr *bad_wr = NULL;
+    wr.wr_id = 0;
+    wr.opcode = IBV_WR_SEND_WITH_IMM;
+    wr.imm_data = return_code;
+    wr.send_flags = 0;
+    wr.sg_list = NULL;
+    wr.num_sge = 0;
+    wr.next = NULL;
+    int ret = ibv_post_send(qp_, &wr, &bad_wr);
+    if (ret) {
+        ERROR("Failed to send WITH_IMM message: {}", strerror(ret));
+    }
+}
+
 void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
     DEBUG("Polling CQ");
 
@@ -330,21 +349,17 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                 INFO("Received remote meta request OP {}", op_name(request->op()));
 
                 switch (request->op()) {
+                    case OP_RDMA_WRITE: {
+                        int ret = write_rdma_cache(request);
+                        if (ret != 0) {
+                            post_ack(ret);
+                        }
+                        break;
+                    }
                     case OP_RDMA_READ: {
                         int ret = read_rdma_cache(request);
-                        // send an error code back
-                        struct ibv_send_wr wr = {0};
-                        struct ibv_send_wr *bad_wr = NULL;
-                        wr.wr_id = 1;
-                        wr.opcode = IBV_WR_SEND_WITH_IMM;
-                        wr.imm_data = ret;
-                        wr.send_flags = 0;
-                        wr.sg_list = NULL;
-                        wr.num_sge = 0;
-                        wr.next = NULL;
-                        ret = ibv_post_send(qp_, &wr, &bad_wr);
-                        if (ret) {
-                            ERROR("Failed to send WITH_IMM message: {}", strerror(ret));
+                        if (ret != 0) {
+                            post_ack(ret);
                         }
                         break;
                     }
@@ -413,7 +428,7 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                     return;
                 }
             }
-            else if (wc.opcode == IBV_WC_RDMA_WRITE) {
+            else if (wc.opcode == IBV_WC_RDMA_WRITE || wc.opcode == IBV_WC_RDMA_WRITE) {
                 // some RDMA write(read cache WRs) is finished
 
                 DEBUG("RDMA_WRITE done wr_id: {}", wc.wr_id);
@@ -558,6 +573,27 @@ int Client::prepare_recv_rdma_request(int buf_idx) {
     return 0;
 }
 
+int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
+    INFO("do rdma write... num of keys: {}", remote_meta_req->keys()->size());
+    if (remote_meta_req->keys()->size() != remote_meta_req->remote_addrs()->size()) {
+        ERROR("keys size and remote_addrs size mismatch");
+        return INVALID_REQ;
+    }
+
+    // allocate memory
+    int block_size = remote_meta_req->block_size();
+    int n = remote_meta_req->keys()->size();
+
+    // create something.
+
+    bool allocated = mm->allocate(
+        block_size, n, [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) { return; });
+
+    // perform rdma read to receive data from client
+
+    return 0;
+}
+
 int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
     INFO("do rdma read... num of keys: {}", remote_meta_req->keys()->size());
 
@@ -605,6 +641,7 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         wrs = new struct ibv_send_wr[max_wr];
         sges = new struct ibv_sge[max_wr];
     }
+
     for (size_t i = 0; i < remote_meta_req->keys()->size(); i++) {
         sges[num_wr].addr = (uintptr_t)(*inflight_rdma_reads)[i]->ptr;
         sges[num_wr].length = remote_meta_req->block_size();
@@ -665,7 +702,7 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         }
     }
 
-    return FINISH;
+    return 0;
 }
 
 // FIXME:

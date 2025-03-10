@@ -1,4 +1,4 @@
-//RDMA read/allocate request
+//RDMA read/write/allocate request
 table RemoteMetaRequest {
   keys: [string];
   block_size: int;

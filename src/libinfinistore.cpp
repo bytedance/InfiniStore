@@ -1036,6 +1036,73 @@ int Connection::w_tcp(const std::string &key, void *ptr, size_t size) {
     return 0;
 }
 
+int Connection::w_rdma_async2(const std::vector<std::string> &keys,
+                              const std::vector<size_t> offsets, int block_size, void *base_ptr,
+                              std::function<void()> callback) {
+    assert(base_ptr != NULL);
+    assert(offsets.size() == keys.size());
+
+    if (!local_mr_.count((uintptr_t)base_ptr)) {
+        ERROR("Please register memory first {}", (uint64_t)base_ptr);
+        return -1;
+    }
+
+    struct ibv_mr *mr = local_mr_[(uintptr_t)base_ptr];
+
+    // remote_meta_request req = {
+    //     .keys = keys,
+    //     .block_size = block_size,
+    //     .op = OP_RDMA_WRITE,
+    //     .remote_addrs = remote_addrs,
+    // }
+
+    SendBuffer *send_buffer = get_send_buffer();
+    FixedBufferAllocator allocator(send_buffer->buffer_, PROTOCOL_BUFFER_SIZE);
+    FlatBufferBuilder builder(64 << 10, &allocator);
+    auto keys_offset = builder.CreateVectorOfStrings(keys);
+    auto remote_addrs_offset = builder.CreateVector(offsets);
+    auto req = CreateRemoteMetaRequest(builder, keys_offset, block_size, mr->rkey,
+                                       remote_addrs_offset, OP_RDMA_WRITE);
+
+    builder.Finish(req);
+
+    // post recv msg first
+    struct ibv_sge recv_sge = {0};
+    struct ibv_recv_wr *bad_recv_wr = NULL;
+    struct ibv_recv_wr recv_wr = {0};
+    auto *info = new rdma_write_info(callback);
+
+    {
+        std::unique_lock<std::mutex> lock(rdma_post_send_mutex_);
+        post_recv(&recv_sge, info);
+    }
+
+    // send msg
+    struct ibv_sge sge = {0};
+    struct ibv_send_wr wr = {0};
+    struct ibv_send_wr *bad_wr = NULL;
+    sge.addr = (uintptr_t)builder.GetBufferPointer();
+    sge.length = builder.GetSize();
+    sge.lkey = send_buffer->mr_->lkey;
+
+    wr.wr_id = (uintptr_t)send_buffer;
+    wr.opcode = IBV_WR_SEND;
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+    wr.send_flags = IBV_SEND_SIGNALED;
+
+    {
+        std::unique_lock<std::mutex> lock(rdma_post_send_mutex_);
+        int ret = ibv_post_send(qp_, &wr, &bad_wr);
+        if (ret) {
+            ERROR("Failed to post RDMA send :{}", strerror(ret));
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 int Connection::w_rdma(unsigned long *p_offsets, size_t offsets_len, int block_size,
                        remote_block_t *p_remote_blocks, size_t remote_blocks_len, void *base_ptr) {
     return w_rdma_async(p_offsets, offsets_len, block_size, p_remote_blocks, remote_blocks_len,

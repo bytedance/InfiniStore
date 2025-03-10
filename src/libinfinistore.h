@@ -36,6 +36,7 @@ enum class WrType {
     ALLOCATE,
     READ_COMMIT,
     WRITE_ACK,
+    RDMA_WRITE_ACK,
 };
 
 struct rdma_info_base {
@@ -52,6 +53,12 @@ struct rdma_allocate_info : rdma_info_base {
     std::function<void()> callback;
     rdma_allocate_info(std::function<void()> callback)
         : rdma_info_base(WrType::ALLOCATE), callback(callback) {}
+};
+
+struct rdma_write_info : rdma_info_base {
+    std::function<void()> callback;
+    rdma_write_info(std::function<void()> callback)
+        : rdma_info_base(WrType::RDMA_WRITE_ACK), callback(callback) {}
 };
 
 struct rdma_read_commit_info : rdma_info_base {
@@ -149,6 +156,9 @@ class Connection {
     int w_rdma_async(unsigned long *p_offsets, size_t offsets_len, int block_size,
                      remote_block_t *p_remote_blocks, size_t remote_blocks_len, void *base_ptr,
                      std::function<void()> callback);
+
+    int w_rdma_async2(const std::vector<std::string> &keys, const std::vector<size_t> offsets,
+                      int block_size, void *base_ptr, std::function<void()> callback);
     int sync_rdma();
     std::vector<remote_block_t> *allocate_rdma(std::vector<std::string> &keys, int block_size);
     int allocate_rdma_async(
