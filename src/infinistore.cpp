@@ -70,8 +70,8 @@ struct Client {
     // RDMA send buffer
     char *send_buffer_ = NULL;
     struct ibv_mr *send_mr_ = NULL;
-    int outstanding_rdma_writes_ = 0;
-    std::deque<std::pair<struct ibv_send_wr *, struct ibv_sge *>> outstanding_rdma_writes_queue_;
+    int outstanding_rdma_ops_ = 0;
+    std::deque<std::pair<struct ibv_send_wr *, struct ibv_sge *>> outstanding_rdma_ops_queue_;
 
     // TCP send buffer
     char *tcp_send_buffer_ = NULL;
@@ -428,15 +428,15 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                     return;
                 }
             }
-            else if (wc.opcode == IBV_WC_RDMA_WRITE || wc.opcode == IBV_WC_RDMA_WRITE) {
+            else if (wc.opcode == IBV_WC_RDMA_WRITE || wc.opcode == IBV_WC_RDMA_READ) {
                 // some RDMA write(read cache WRs) is finished
 
-                DEBUG("RDMA_WRITE done wr_id: {}", wc.wr_id);
-                assert(outstanding_rdma_writes_ >= 0);
-                outstanding_rdma_writes_ -= MAX_WR_BATCH;
+                INFO("RDMA OPS done wr_id: {}, {}", wc.wr_id, (int)wc.opcode);
+                assert(outstanding_rdma_ops_ >= 0);
+                outstanding_rdma_ops_ -= MAX_WR_BATCH;
 
-                if (!outstanding_rdma_writes_queue_.empty()) {
-                    auto item = outstanding_rdma_writes_queue_.front();
+                if (!outstanding_rdma_ops_queue_.empty()) {
+                    auto item = outstanding_rdma_ops_queue_.front();
                     struct ibv_send_wr *wrs = item.first;
                     struct ibv_sge *sges = item.second;
                     ibv_send_wr *bad_wr = nullptr;
@@ -446,16 +446,30 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                         ERROR("Failed to post RDMA write {}", strerror(ret));
                         throw std::runtime_error("Failed to post RDMA write");
                     }
-                    outstanding_rdma_writes_ += MAX_WR_BATCH;
+                    outstanding_rdma_ops_ += MAX_WR_BATCH;
                     delete[] wrs;
                     delete[] sges;
-                    outstanding_rdma_writes_queue_.pop_front();
+                    outstanding_rdma_ops_queue_.pop_front();
                 }
 
                 if (wc.wr_id > 0) {
                     // last WR will inform that all RDMA write is finished,so we can dereference PTR
-                    auto inflight_rdma_reads = (std::vector<boost::intrusive_ptr<PTR>> *)wc.wr_id;
-                    delete inflight_rdma_reads;
+                    if (wc.opcode == IBV_WC_RDMA_READ) {
+                        auto inflight_rdma_writes =
+                            (std::vector<boost::intrusive_ptr<PTR>> *)wc.wr_id;
+                        for (auto ptr : *inflight_rdma_writes) {
+                            ptr->committed = true;
+                        }
+                        delete inflight_rdma_writes;
+                        INFO("SEND WRITE ACK");
+                        post_ack(FINISH);
+                    }
+                    else if (wc.opcode == IBV_WC_RDMA_WRITE) {
+                        post_ack(FINISH);
+                        auto inflight_rdma_reads =
+                            (std::vector<boost::intrusive_ptr<PTR>> *)wc.wr_id;
+                        delete inflight_rdma_reads;
+                    }
                 }
             }
             else {
@@ -586,10 +600,100 @@ int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
 
     // create something.
 
-    bool allocated = mm->allocate(
-        block_size, n, [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) { return; });
+    auto *inflight_rdma_writes = new std::vector<boost::intrusive_ptr<PTR>>;
+    inflight_rdma_writes->reserve(n);
 
+    int key_idx = 0;
+    bool allocated =
+        mm->allocate(block_size, n, [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
+            const auto *key = remote_meta_req->keys()->Get(key_idx);
+            auto ptr = boost::intrusive_ptr<PTR>(new PTR(addr, block_size, pool_idx, false));
+            inflight_rdma_writes->push_back(ptr);
+            kv_map[key->str()] = ptr;
+            key_idx++;
+        });
+
+    if (!allocated) {
+        ERROR("Failed to allocate memory");
+        delete inflight_rdma_writes;
+        return OUT_OF_MEMORY;
+    }
     // perform rdma read to receive data from client
+
+    const size_t max_wr = MAX_WR_BATCH;
+    struct ibv_send_wr local_wrs[max_wr];
+    struct ibv_sge local_sges[max_wr];
+
+    struct ibv_send_wr *wrs = local_wrs;
+    struct ibv_sge *sges = local_sges;
+
+    size_t num_wr = 0;
+    bool wr_full = false;
+
+    if (outstanding_rdma_ops_ + max_wr > MAX_RDMA_OPS_WR) {
+        wr_full = true;
+        wrs = new struct ibv_send_wr[max_wr];
+        sges = new struct ibv_sge[max_wr];
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        sges[num_wr].addr = (uintptr_t)(*inflight_rdma_writes)[i]->ptr;
+        sges[num_wr].length = remote_meta_req->block_size();
+        sges[num_wr].lkey = mm->get_lkey((*inflight_rdma_writes)[i]->pool_idx);
+
+        wrs[num_wr].wr_id = 0;
+        wrs[num_wr].opcode = IBV_WR_RDMA_READ;
+        wrs[num_wr].sg_list = &sges[num_wr];
+        wrs[num_wr].num_sge = 1;
+        wrs[num_wr].wr.rdma.remote_addr = remote_meta_req->remote_addrs()->Get(i);
+        wrs[num_wr].wr.rdma.rkey = remote_meta_req->rkey();
+        wrs[num_wr].next = (num_wr == max_wr - 1 || i == remote_meta_req->keys()->size() - 1)
+                               ? nullptr
+                               : &wrs[num_wr + 1];
+
+        wrs[num_wr].send_flags = (num_wr == max_wr - 1 || i == remote_meta_req->keys()->size() - 1)
+                                     ? IBV_SEND_SIGNALED
+                                     : 0;
+
+        if (i == remote_meta_req->keys()->size() - 1) {
+            wrs[num_wr].wr_id = (uintptr_t)inflight_rdma_writes;
+        }
+
+        num_wr++;
+
+        if (num_wr == max_wr || i == remote_meta_req->keys()->size() - 1) {
+            if (!wr_full) {
+                struct ibv_send_wr *bad_wr = nullptr;
+                int ret = ibv_post_send(qp_, &wrs[0], &bad_wr);
+                if (ret) {
+                    ERROR("Failed to post RDMA write {}", strerror(ret));
+                    return -1;
+                }
+                outstanding_rdma_ops_ += max_wr;
+
+                // check if next iteration will exceed the limit
+                if (outstanding_rdma_ops_ + max_wr > MAX_RDMA_OPS_WR) {
+                    wr_full = true;
+                }
+            }
+            else {
+                // if WR queue is full, we need to put them into queue
+                // WARN(
+                //     "WR queue full: push into queue, len: {}, first wr_id: {}, last wr_id: {}, "
+                //     "last op code: {} ",
+                //     num_wr, wrs[0].wr_id, wrs[num_wr - 1].wr_id,
+                //     static_cast<int>(wrs[num_wr - 1].opcode));
+                outstanding_rdma_ops_queue_.push_back({&wrs[0], &sges[0]});
+            }
+
+            if (wr_full) {
+                wrs = new struct ibv_send_wr[max_wr];
+                sges = new struct ibv_sge[max_wr];
+            }
+
+            num_wr = 0;  // Reset the counter for the next batch
+        }
+    }
 
     return 0;
 }
@@ -636,7 +740,7 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
     size_t num_wr = 0;
     bool wr_full = false;
 
-    if (outstanding_rdma_writes_ + max_wr > MAX_RDMA_WRITE_WR) {
+    if (outstanding_rdma_ops_ + max_wr > MAX_RDMA_OPS_WR) {
         wr_full = true;
         wrs = new struct ibv_send_wr[max_wr];
         sges = new struct ibv_sge[max_wr];
@@ -676,10 +780,10 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
                     ERROR("Failed to post RDMA write {}", strerror(ret));
                     return -1;
                 }
-                outstanding_rdma_writes_ += max_wr;
+                outstanding_rdma_ops_ += max_wr;
 
                 // check if next iteration will exceed the limit
-                if (outstanding_rdma_writes_ + max_wr > MAX_RDMA_WRITE_WR) {
+                if (outstanding_rdma_ops_ + max_wr > MAX_RDMA_OPS_WR) {
                     wr_full = true;
                 }
             }
@@ -690,7 +794,7 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
                     "last op code: {} ",
                     num_wr, wrs[0].wr_id, wrs[num_wr - 1].wr_id,
                     static_cast<int>(wrs[num_wr - 1].opcode));
-                outstanding_rdma_writes_queue_.push_back({&wrs[0], &sges[0]});
+                outstanding_rdma_ops_queue_.push_back({&wrs[0], &sges[0]});
             }
 
             if (wr_full) {

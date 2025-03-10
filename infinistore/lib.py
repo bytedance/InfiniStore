@@ -282,7 +282,7 @@ class InfinityConnection:
         self.config = config
 
         # used for async io
-        self.semaphore = asyncio.BoundedSemaphore(1024)
+        self.semaphore = asyncio.BoundedSemaphore(128)
         Logger.set_log_level(config.log_level)
 
     async def connect_async(self):
@@ -417,6 +417,32 @@ class InfinityConnection:
         ret = self.conn.w_tcp(key, ptr, size)
         if ret < 0:
             raise Exception(f"Failed to write to infinistore, ret = {ret}")
+
+    async def rdma_write_cache_single_async2(
+        self, key: str, ptr: int, size: int, **kwargs
+    ):
+        if not self.rdma_connected:
+            raise Exception("this function is only valid for connected rdma")
+        if key == "":
+            raise Exception("key is empty")
+        if size == 0:
+            raise Exception("size is 0")
+        if ptr == 0:
+            raise Exception("ptr is 0")
+
+        await self.semaphore.acquire()
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
+        def _callback(ret_code):
+            loop.call_soon_threadsafe(future.set_result, ret_code)
+            self.semaphore.release()
+
+        ret = self.conn.w_rdma_async2([key], [0], size, ptr, _callback)
+        if ret < 0:
+            raise Exception(f"Failed to write to infinistore, ret = {ret}")
+
+        return await future
 
     async def rdma_write_cache_single_async(
         self, key: str, ptr: int, size: int, **kwargs

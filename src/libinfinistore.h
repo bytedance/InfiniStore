@@ -56,8 +56,8 @@ struct rdma_allocate_info : rdma_info_base {
 };
 
 struct rdma_write_info : rdma_info_base {
-    std::function<void()> callback;
-    rdma_write_info(std::function<void()> callback)
+    std::function<void(int)> callback;
+    rdma_write_info(std::function<void(int)> callback)
         : rdma_info_base(WrType::RDMA_WRITE_ACK), callback(callback) {}
 };
 
@@ -158,7 +158,7 @@ class Connection {
                      std::function<void()> callback);
 
     int w_rdma_async2(const std::vector<std::string> &keys, const std::vector<size_t> offsets,
-                      int block_size, void *base_ptr, std::function<void()> callback);
+                      int block_size, void *base_ptr, std::function<void(int)> callback);
     int sync_rdma();
     std::vector<remote_block_t> *allocate_rdma(std::vector<std::string> &keys, int block_size);
     int allocate_rdma_async(

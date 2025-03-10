@@ -353,6 +353,14 @@ void Connection::cq_handler() {
                                 cv_.notify_all();
                                 break;
                             }
+                            case WrType::RDMA_WRITE_ACK: {
+                                INFO("RDMA write cache done: Received IMM, imm_data: {}",
+                                     wc[i].imm_data);
+                                auto *info = reinterpret_cast<rdma_write_info *>(ptr);
+                                info->callback(wc->imm_data);
+                                delete info;
+                                break;
+                            }
                         }
                     }
                     else if (wc[i].opcode == IBV_WC_RDMA_WRITE) {  // write cache done
@@ -1038,7 +1046,7 @@ int Connection::w_tcp(const std::string &key, void *ptr, size_t size) {
 
 int Connection::w_rdma_async2(const std::vector<std::string> &keys,
                               const std::vector<size_t> offsets, int block_size, void *base_ptr,
-                              std::function<void()> callback) {
+                              std::function<void(int)> callback) {
     assert(base_ptr != NULL);
     assert(offsets.size() == keys.size());
 
@@ -1060,7 +1068,13 @@ int Connection::w_rdma_async2(const std::vector<std::string> &keys,
     FixedBufferAllocator allocator(send_buffer->buffer_, PROTOCOL_BUFFER_SIZE);
     FlatBufferBuilder builder(64 << 10, &allocator);
     auto keys_offset = builder.CreateVectorOfStrings(keys);
-    auto remote_addrs_offset = builder.CreateVector(offsets);
+
+    // address is base_ptr + offset
+    std::vector<unsigned long> remote_addrs;
+    for (size_t i = 0; i < offsets.size(); i++) {
+        remote_addrs.push_back((unsigned long)base_ptr + offsets[i]);
+    }
+    auto remote_addrs_offset = builder.CreateVector(remote_addrs);
     auto req = CreateRemoteMetaRequest(builder, keys_offset, block_size, mr->rkey,
                                        remote_addrs_offset, OP_RDMA_WRITE);
 
@@ -1141,7 +1155,7 @@ int Connection::w_rdma_async(unsigned long *p_offsets, size_t offsets_len, int b
 
     auto *info = new rdma_write_commit_info([callback]() { callback(); }, remote_blocks_len);
 
-    if (outstanding_rdma_writes_ + max_wr > MAX_RDMA_WRITE_WR) {
+    if (outstanding_rdma_writes_ + max_wr > MAX_RDMA_OPS_WR) {
         wr_full = true;
         wrs = new struct ibv_send_wr[max_wr];
         sges = new struct ibv_sge[max_wr];
@@ -1194,7 +1208,7 @@ int Connection::w_rdma_async(unsigned long *p_offsets, size_t offsets_len, int b
                 outstanding_rdma_writes_ += max_wr;
 
                 // check if next iteration will exceed the limit
-                if (outstanding_rdma_writes_ + max_wr > MAX_RDMA_WRITE_WR) {
+                if (outstanding_rdma_writes_ + max_wr > MAX_RDMA_OPS_WR) {
                     wr_full = true;
                 }
             }
