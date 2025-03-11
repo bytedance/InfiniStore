@@ -109,6 +109,9 @@ struct Client {
     int delete_keys(const DeleteKeysRequest *request);
     int rdma_exchange();
     int prepare_recv_rdma_request(int buf_idx);
+    void perform_batch_rdma(const RemoteMetaRequest *remote_meta_req,
+                            std::vector<boost::intrusive_ptr<PTR>> *inflight_rdma_ops,
+                            enum ibv_wr_opcode opcode);
 };
 
 typedef struct Client client_t;
@@ -461,7 +464,6 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                             ptr->committed = true;
                         }
                         delete inflight_rdma_writes;
-                        INFO("SEND WRITE ACK");
                         post_ack(FINISH);
                     }
                     else if (wc.opcode == IBV_WC_RDMA_WRITE) {
@@ -587,6 +589,91 @@ int Client::prepare_recv_rdma_request(int buf_idx) {
     return 0;
 }
 
+void Client::perform_batch_rdma(const RemoteMetaRequest *remote_meta_req,
+                                std::vector<boost::intrusive_ptr<PTR>> *inflight_rdma_ops,
+                                enum ibv_wr_opcode opcode) {
+    assert(opcode == IBV_WR_RDMA_READ || opcode == IBV_WR_RDMA_WRITE);
+
+    const size_t max_wr = MAX_WR_BATCH;
+    struct ibv_send_wr local_wrs[max_wr];
+    struct ibv_sge local_sges[max_wr];
+
+    struct ibv_send_wr *wrs = local_wrs;
+    struct ibv_sge *sges = local_sges;
+
+    size_t num_wr = 0;
+    bool wr_full = false;
+
+    if (outstanding_rdma_ops_ + max_wr > MAX_RDMA_OPS_WR) {
+        wr_full = true;
+        wrs = new struct ibv_send_wr[max_wr];
+        sges = new struct ibv_sge[max_wr];
+    }
+
+    int n = remote_meta_req->keys()->size();
+    for (int i = 0; i < n; i++) {
+        sges[num_wr].addr = (uintptr_t)(*inflight_rdma_ops)[i]->ptr;
+        sges[num_wr].length = remote_meta_req->block_size();
+        sges[num_wr].lkey = mm->get_lkey((*inflight_rdma_ops)[i]->pool_idx);
+
+        wrs[num_wr].wr_id = 0;
+        wrs[num_wr].opcode = opcode;
+        wrs[num_wr].sg_list = &sges[num_wr];
+        wrs[num_wr].num_sge = 1;
+        wrs[num_wr].wr.rdma.remote_addr = remote_meta_req->remote_addrs()->Get(i);
+        wrs[num_wr].wr.rdma.rkey = remote_meta_req->rkey();
+
+        // wrs[num_wr].wr.rdma.rkey = remote_meta_req->rkey();
+        wrs[num_wr].next = (num_wr == max_wr - 1 || i == (int)remote_meta_req->keys()->size() - 1)
+                               ? nullptr
+                               : &wrs[num_wr + 1];
+
+        wrs[num_wr].send_flags =
+            (num_wr == max_wr - 1 || i == (int)remote_meta_req->keys()->size() - 1)
+                ? IBV_SEND_SIGNALED
+                : 0;
+
+        if (i == remote_meta_req->keys()->size() - 1) {
+            wrs[num_wr].wr_id = (uintptr_t)inflight_rdma_ops;
+        }
+
+        num_wr++;
+
+        if (num_wr == max_wr || i == remote_meta_req->keys()->size() - 1) {
+            if (!wr_full) {
+                struct ibv_send_wr *bad_wr = nullptr;
+                int ret = ibv_post_send(qp_, &wrs[0], &bad_wr);
+                if (ret) {
+                    ERROR("Failed to post RDMA write {}", strerror(ret));
+                    return;
+                }
+                outstanding_rdma_ops_ += max_wr;
+
+                // check if next iteration will exceed the limit
+                if (outstanding_rdma_ops_ + max_wr > MAX_RDMA_OPS_WR) {
+                    wr_full = true;
+                }
+            }
+            else {
+                // if WR queue is full, we need to put them into queue
+                WARN(
+                    "WR queue full: push into queue, len: {}, first wr_id: {}, last wr_id: {}, "
+                    "last op code: {} ",
+                    num_wr, wrs[0].wr_id, wrs[num_wr - 1].wr_id,
+                    static_cast<int>(wrs[num_wr - 1].opcode));
+                outstanding_rdma_ops_queue_.push_back({&wrs[0], &sges[0]});
+            }
+
+            if (wr_full) {
+                wrs = new struct ibv_send_wr[max_wr];
+                sges = new struct ibv_sge[max_wr];
+            }
+
+            num_wr = 0;  // Reset the counter for the next batch
+        }
+    }
+}
+
 int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
     INFO("do rdma write... num of keys: {}", remote_meta_req->keys()->size());
     if (remote_meta_req->keys()->size() != remote_meta_req->remote_addrs()->size()) {
@@ -619,82 +706,8 @@ int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         return OUT_OF_MEMORY;
     }
     // perform rdma read to receive data from client
-
-    const size_t max_wr = MAX_WR_BATCH;
-    struct ibv_send_wr local_wrs[max_wr];
-    struct ibv_sge local_sges[max_wr];
-
-    struct ibv_send_wr *wrs = local_wrs;
-    struct ibv_sge *sges = local_sges;
-
-    size_t num_wr = 0;
-    bool wr_full = false;
-
-    if (outstanding_rdma_ops_ + max_wr > MAX_RDMA_OPS_WR) {
-        wr_full = true;
-        wrs = new struct ibv_send_wr[max_wr];
-        sges = new struct ibv_sge[max_wr];
-    }
-
-    for (size_t i = 0; i < n; i++) {
-        sges[num_wr].addr = (uintptr_t)(*inflight_rdma_writes)[i]->ptr;
-        sges[num_wr].length = remote_meta_req->block_size();
-        sges[num_wr].lkey = mm->get_lkey((*inflight_rdma_writes)[i]->pool_idx);
-
-        wrs[num_wr].wr_id = 0;
-        wrs[num_wr].opcode = IBV_WR_RDMA_READ;
-        wrs[num_wr].sg_list = &sges[num_wr];
-        wrs[num_wr].num_sge = 1;
-        wrs[num_wr].wr.rdma.remote_addr = remote_meta_req->remote_addrs()->Get(i);
-        wrs[num_wr].wr.rdma.rkey = remote_meta_req->rkey();
-        wrs[num_wr].next = (num_wr == max_wr - 1 || i == remote_meta_req->keys()->size() - 1)
-                               ? nullptr
-                               : &wrs[num_wr + 1];
-
-        wrs[num_wr].send_flags = (num_wr == max_wr - 1 || i == remote_meta_req->keys()->size() - 1)
-                                     ? IBV_SEND_SIGNALED
-                                     : 0;
-
-        if (i == remote_meta_req->keys()->size() - 1) {
-            wrs[num_wr].wr_id = (uintptr_t)inflight_rdma_writes;
-        }
-
-        num_wr++;
-
-        if (num_wr == max_wr || i == remote_meta_req->keys()->size() - 1) {
-            if (!wr_full) {
-                struct ibv_send_wr *bad_wr = nullptr;
-                int ret = ibv_post_send(qp_, &wrs[0], &bad_wr);
-                if (ret) {
-                    ERROR("Failed to post RDMA write {}", strerror(ret));
-                    return -1;
-                }
-                outstanding_rdma_ops_ += max_wr;
-
-                // check if next iteration will exceed the limit
-                if (outstanding_rdma_ops_ + max_wr > MAX_RDMA_OPS_WR) {
-                    wr_full = true;
-                }
-            }
-            else {
-                // if WR queue is full, we need to put them into queue
-                // WARN(
-                //     "WR queue full: push into queue, len: {}, first wr_id: {}, last wr_id: {}, "
-                //     "last op code: {} ",
-                //     num_wr, wrs[0].wr_id, wrs[num_wr - 1].wr_id,
-                //     static_cast<int>(wrs[num_wr - 1].opcode));
-                outstanding_rdma_ops_queue_.push_back({&wrs[0], &sges[0]});
-            }
-
-            if (wr_full) {
-                wrs = new struct ibv_send_wr[max_wr];
-                sges = new struct ibv_sge[max_wr];
-            }
-
-            num_wr = 0;  // Reset the counter for the next batch
-        }
-    }
-
+    // read remote address data to local address
+    perform_batch_rdma(remote_meta_req, inflight_rdma_writes, IBV_WR_RDMA_READ);
     return 0;
 }
 
@@ -730,82 +743,8 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         inflight_rdma_reads->push_back(ptr);
     }
 
-    const size_t max_wr = MAX_WR_BATCH;
-    struct ibv_send_wr local_wrs[max_wr];
-    struct ibv_sge local_sges[max_wr];
-
-    struct ibv_send_wr *wrs = local_wrs;
-    struct ibv_sge *sges = local_sges;
-
-    size_t num_wr = 0;
-    bool wr_full = false;
-
-    if (outstanding_rdma_ops_ + max_wr > MAX_RDMA_OPS_WR) {
-        wr_full = true;
-        wrs = new struct ibv_send_wr[max_wr];
-        sges = new struct ibv_sge[max_wr];
-    }
-
-    for (size_t i = 0; i < remote_meta_req->keys()->size(); i++) {
-        sges[num_wr].addr = (uintptr_t)(*inflight_rdma_reads)[i]->ptr;
-        sges[num_wr].length = remote_meta_req->block_size();
-        sges[num_wr].lkey = mm->get_lkey((*inflight_rdma_reads)[i]->pool_idx);
-
-        wrs[num_wr].wr_id = 0;
-        wrs[num_wr].opcode = IBV_WR_RDMA_WRITE;
-        wrs[num_wr].sg_list = &sges[num_wr];
-        wrs[num_wr].num_sge = 1;
-        wrs[num_wr].wr.rdma.remote_addr = remote_meta_req->remote_addrs()->Get(i);
-        wrs[num_wr].wr.rdma.rkey = remote_meta_req->rkey();
-        wrs[num_wr].next = (num_wr == max_wr - 1 || i == remote_meta_req->keys()->size() - 1)
-                               ? nullptr
-                               : &wrs[num_wr + 1];
-
-        wrs[num_wr].send_flags = (num_wr == max_wr - 1 || i == remote_meta_req->keys()->size() - 1)
-                                     ? IBV_SEND_SIGNALED
-                                     : 0;
-
-        if (i == remote_meta_req->keys()->size() - 1) {
-            wrs[num_wr].wr_id = (uintptr_t)inflight_rdma_reads;
-        }
-
-        num_wr++;
-
-        if (num_wr == max_wr || i == remote_meta_req->keys()->size() - 1) {
-            if (!wr_full) {
-                struct ibv_send_wr *bad_wr = nullptr;
-                DEBUG("local write");
-                int ret = ibv_post_send(qp_, &wrs[0], &bad_wr);
-                if (ret) {
-                    ERROR("Failed to post RDMA write {}", strerror(ret));
-                    return -1;
-                }
-                outstanding_rdma_ops_ += max_wr;
-
-                // check if next iteration will exceed the limit
-                if (outstanding_rdma_ops_ + max_wr > MAX_RDMA_OPS_WR) {
-                    wr_full = true;
-                }
-            }
-            else {
-                // if WR queue is full, we need to put them into queue
-                WARN(
-                    "WR queue full: push into queue, len: {}, first wr_id: {}, last wr_id: {}, "
-                    "last op code: {} ",
-                    num_wr, wrs[0].wr_id, wrs[num_wr - 1].wr_id,
-                    static_cast<int>(wrs[num_wr - 1].opcode));
-                outstanding_rdma_ops_queue_.push_back({&wrs[0], &sges[0]});
-            }
-
-            if (wr_full) {
-                wrs = new struct ibv_send_wr[max_wr];
-                sges = new struct ibv_sge[max_wr];
-            }
-
-            num_wr = 0;  // Reset the counter for the next batch
-        }
-    }
-
+    // write to  remote address data from local address
+    perform_batch_rdma(remote_meta_req, inflight_rdma_reads, IBV_WR_RDMA_WRITE);
     return 0;
 }
 

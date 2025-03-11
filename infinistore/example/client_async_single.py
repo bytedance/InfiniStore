@@ -44,6 +44,10 @@ async def main():
 
     await asyncio.to_thread(register_mr)
 
+    # set src
+    for i in range(size):
+        src[i] = i % 256
+
     is_exist = await asyncio.to_thread(rdma_conn.check_exist, key)
     assert not is_exist
 
@@ -73,7 +77,7 @@ async def main():
     await asyncio.gather(*tasks, return_exceptions=True)
     print("read Time taken: ", time.time() - now)
 
-    # assert src == dst
+    assert src == dst
 
     rdma_conn.close()
 
