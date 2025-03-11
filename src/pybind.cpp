@@ -51,38 +51,6 @@ PYBIND11_MODULE(_infinistore, m) {
         .def("close", &Connection::close_conn, py::call_guard<py::gil_scoped_release>(),
              "close the connection")
         .def(
-            "r_rdma",
-            [](Connection &self, const std::vector<std::tuple<std::string, unsigned long>> &blocks,
-               int block_size, uintptr_t ptr) {
-                std::vector<block_t> c_blocks;
-                for (const auto &block : blocks) {
-                    c_blocks.push_back(block_t{std::get<0>(block), std::get<1>(block)});
-                }
-                return self.r_rdma(c_blocks, block_size, (void *)ptr);
-            },
-            py::call_guard<py::gil_scoped_release>(), "Read remote memory")
-        .def(
-            "w_rdma",
-            [](Connection &self,
-               py::array_t<unsigned long, py::array::c_style | py::array::forcecast> offsets,
-               int block_size,
-               py::array_t<remote_block_t, py::array::c_style | py::array::forcecast> remote_blocks,
-               uintptr_t base_ptr) {
-                py::buffer_info block_buf = remote_blocks.request();
-                py::buffer_info offset_buf = offsets.request();
-
-                assert(block_buf.ndim == 1);
-                assert(offset_buf.ndim == 1);
-
-                remote_block_t *p_remote_blocks = static_cast<remote_block_t *>(block_buf.ptr);
-                unsigned long *p_offsets = static_cast<unsigned long *>(offset_buf.ptr);
-                size_t remote_blocks_len = block_buf.shape[0];
-                size_t offsets_len = offset_buf.shape[0];
-                return self.w_rdma(p_offsets, offsets_len, block_size, p_remote_blocks,
-                                   remote_blocks_len, (void *)base_ptr);
-            },
-            "Write remote memory")
-        .def(
             "r_rdma_async",
             [](Connection &self, const std::vector<std::tuple<std::string, unsigned long>> &blocks,
                int block_size, uintptr_t ptr, std::function<void(unsigned int)> callback) {
@@ -109,73 +77,18 @@ PYBIND11_MODULE(_infinistore, m) {
             },
             py::call_guard<py::gil_scoped_release>(), "Read remote memory using TCP")
         .def(
-            "w_rdma_async2",
+            "w_rdma_async",
             [](Connection &self, const std::vector<std::string> &keys,
                const std::vector<size_t> offsets, int block_size, uintptr_t base_ptr,
                std::function<void(int)> callback) {
                 // FIXME: callback function
-                return self.w_rdma_async2(keys, offsets, block_size, (void *)base_ptr, callback);
+                return self.w_rdma_async(keys, offsets, block_size, (void *)base_ptr, callback);
             },
             py::call_guard<py::gil_scoped_release>(), "write rdma async2")
-        .def(
-            "w_rdma_async",
-            [](Connection &self,
-               py::array_t<unsigned long, py::array::c_style | py::array::forcecast> offsets,
-               int block_size,
-               py::array_t<remote_block_t, py::array::c_style | py::array::forcecast> remote_blocks,
-               uintptr_t base_ptr, std::function<void()> callback) {
-                py::buffer_info block_buf = remote_blocks.request();
-                py::buffer_info offset_buf = offsets.request();
-
-                assert(block_buf.ndim == 1);
-                assert(offset_buf.ndim == 1);
-
-                remote_block_t *p_remote_blocks = static_cast<remote_block_t *>(block_buf.ptr);
-                unsigned long *p_offsets = static_cast<unsigned long *>(offset_buf.ptr);
-                size_t remote_blocks_len = block_buf.shape[0];
-                size_t offsets_len = offset_buf.shape[0];
-                return self.w_rdma_async(p_offsets, offsets_len, block_size, p_remote_blocks,
-                                         remote_blocks_len, (void *)base_ptr, [callback]() {
-                                             // python code will take_gil by itself
-                                             callback();
-                                         });
-            },
-            "Write remote memory asynchronously")
-
-        .def(
-            "allocate_rdma",
-            [](Connection &self, std::vector<std::string> &keys, int block_size) {
-                std::vector<remote_block_t> *blocks = self.allocate_rdma(keys, block_size);
-                // throw python exception if blocks is nullptr
-                if (blocks == nullptr) {
-                    throw std::runtime_error("Failed to allocate remote memory");
-                }
-                py::gil_scoped_acquire acquire;
-                return as_pyarray(std::move(*blocks));
-            },
-            py::call_guard<py::gil_scoped_release>(), "Allocate remote memory")
-        .def(
-            "allocate_rdma_async",
-            [](Connection &self, std::vector<std::string> &keys, int block_size,
-               std::function<void(py::array, unsigned int)> callback) {
-                self.allocate_rdma_async(
-                    keys, block_size,
-                    [callback](std::vector<remote_block_t> *blocks, unsigned int error_code) {
-                        py::gil_scoped_acquire acquire;
-                        callback(as_pyarray(std::move(*blocks)), error_code);
-                        delete blocks;
-                    });
-                return;
-            },
-            py::call_guard<py::gil_scoped_release>(), "Allocate remote memory asynchronously")
-
         .def("init_connection", &Connection::init_connection,
              py::call_guard<py::gil_scoped_release>(), "init connection")
         .def("setup_rdma", &Connection::setup_rdma, py::call_guard<py::gil_scoped_release>(),
              "setup rdma connection")
-        .def("sync_rdma", &Connection::sync_rdma, py::call_guard<py::gil_scoped_release>(),
-             "sync the remote server")
-
         .def("check_exist", &Connection::check_exist, py::call_guard<py::gil_scoped_release>(),
              "check if the key exists in the store")
         .def("get_match_last_index", &Connection::get_match_last_index,

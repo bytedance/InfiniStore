@@ -1,6 +1,5 @@
 from infinistore import (
     ClientConfig,
-    check_supported,
     InfinityConnection,
 )
 import infinistore
@@ -18,7 +17,6 @@ def generate_random_string(length):
 
 
 def run(conn, src_device="cuda:0", dst_device="cuda:2"):
-    check_supported()
     src_tensor = torch.tensor(
         [i for i in range(4096)], device=src_device, dtype=torch.float32
     )

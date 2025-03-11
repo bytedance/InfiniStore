@@ -33,9 +33,7 @@ struct SendBuffer {
 
 enum class WrType {
     BASE,
-    ALLOCATE,
-    READ_COMMIT,
-    WRITE_ACK,
+    RDMA_READ_ACK,
     RDMA_WRITE_ACK,
 };
 
@@ -49,35 +47,17 @@ struct rdma_info_base {
     WrType get_wr_type() const { return wr_type; }
 };
 
-struct rdma_allocate_info : rdma_info_base {
-    std::function<void()> callback;
-    rdma_allocate_info(std::function<void()> callback)
-        : rdma_info_base(WrType::ALLOCATE), callback(callback) {}
-};
-
 struct rdma_write_info : rdma_info_base {
     std::function<void(int)> callback;
     rdma_write_info(std::function<void(int)> callback)
         : rdma_info_base(WrType::RDMA_WRITE_ACK), callback(callback) {}
 };
 
-struct rdma_read_commit_info : rdma_info_base {
+struct rdma_read_info : rdma_info_base {
     // call back function.
     std::function<void(unsigned int)> callback;
-    rdma_read_commit_info(std::function<void(unsigned int)> callback)
-        : rdma_info_base(WrType::READ_COMMIT), callback(callback) {}
-};
-
-struct rdma_write_commit_info : rdma_info_base {
-    // call back function.
-    std::function<void()> callback;
-    // the number of blocks that have been written.
-    std::vector<uintptr_t> remote_addrs;
-
-    rdma_write_commit_info(std::function<void()> callback, int n)
-        : rdma_info_base(WrType::WRITE_ACK), callback(callback), remote_addrs() {
-        remote_addrs.reserve(n);
-    }
+    rdma_read_info(std::function<void(unsigned int)> callback)
+        : rdma_info_base(WrType::RDMA_READ_ACK), callback(callback) {}
 };
 
 class Connection {
@@ -108,27 +88,10 @@ class Connection {
     */
     boost::lockfree::spsc_queue<SendBuffer *> send_buffers_{MAX_RECV_WR};
 
-    // this recv buffer is used in
-    // 1. allocate rdma
-    // 2. recv IMM data, although IMM DATA is not put into recv_buffer,
-    // but for compatibility, we still use a zero-length recv_buffer.
-    // void *recv_buffer_ = NULL;
-    // struct ibv_mr *recv_mr_ = NULL;
-    boost::lockfree::spsc_queue<SendBuffer *> recv_buffers_{MAX_RECV_WR};
-
     struct ibv_comp_channel *comp_channel_ = NULL;
     std::future<void> cq_future_;  // cq thread
-    std::atomic<int> rdma_inflight_count_{0};
 
     std::atomic<bool> stop_{false};
-    // protect rdma_inflight_count
-    std::mutex mutex_;
-    std::condition_variable cv_;
-
-    // protect ibv_post_send, outstanding_rdma_writes_queue
-    std::mutex rdma_post_send_mutex_;
-    std::atomic<int> outstanding_rdma_writes_{0};
-    std::deque<std::pair<struct ibv_send_wr *, struct ibv_sge *>> outstanding_rdma_writes_queue_;
 
    public:
     Connection() = default;
@@ -143,27 +106,13 @@ class Connection {
     // the operation is completed until sync_local is recved.
     int rw_local(char op, const std::vector<block_t> &blocks, int block_size, void *ptr,
                  int device_id);
-    int sync_local();
     int setup_rdma(client_config_t config);
-    int r_rdma(std::vector<block_t> &blocks, int block_size, void *base_ptr);
     int r_rdma_async(std::vector<block_t> &blocks, int block_size, void *base_ptr,
                      std::function<void(unsigned int)> callback);
     int w_tcp(const std::string &key, void *ptr, size_t size);
     std::vector<unsigned char> *r_tcp(const std::string &key);
-
-    int w_rdma(unsigned long *p_offsets, size_t offsets_len, int block_size,
-               remote_block_t *p_remote_blocks, size_t remote_blocks_len, void *base_ptr);
-    int w_rdma_async(unsigned long *p_offsets, size_t offsets_len, int block_size,
-                     remote_block_t *p_remote_blocks, size_t remote_blocks_len, void *base_ptr,
-                     std::function<void()> callback);
-
-    int w_rdma_async2(const std::vector<std::string> &keys, const std::vector<size_t> offsets,
-                      int block_size, void *base_ptr, std::function<void(int)> callback);
-    int sync_rdma();
-    std::vector<remote_block_t> *allocate_rdma(std::vector<std::string> &keys, int block_size);
-    int allocate_rdma_async(
-        std::vector<std::string> &keys, int block_size,
-        std::function<void(std::vector<remote_block_t> *, unsigned int error_code)> callback);
+    int w_rdma_async(const std::vector<std::string> &keys, const std::vector<size_t> offsets,
+                     int block_size, void *base_ptr, std::function<void(int)> callback);
     int check_exist(std::string key);
     int get_match_last_index(std::vector<std::string> &keys);
     int delete_keys(const std::vector<std::string> &keys);
@@ -175,7 +124,7 @@ class Connection {
     int exchange_conn_info();
     int init_rdma_resources(client_config_t config);
 
-    void post_recv(struct ibv_sge *recv_sge, rdma_info_base *info);
+    void post_recv_ack(rdma_info_base *info);
 
     void cq_handler();
     // TODO: refactor to c++ style

@@ -38,13 +38,13 @@ def main():
         now = time.time()
         N = 1000
         for i in range(N):
-            conn.tcp_write_cache_single(key + str(i), get_ptr(src), len(src))
+            conn.tcp_write_cache(key + str(i), get_ptr(src), len(src))
         print("TCP write time taken: ", time.time() - now)
 
         now = time.time()
         ret = []
         for i in range(N):
-            ret.append(conn.tcp_read_cache_single(key + str(i)))
+            ret.append(conn.tcp_read_cache(key + str(i)))
         print("TCP read Time taken: ", time.time() - now)
 
         assert len(ret) == len(src)

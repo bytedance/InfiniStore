@@ -346,10 +346,9 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
     while (ibv_poll_cq(cq, 1, &wc) > 0) {
         if (wc.status == IBV_WC_SUCCESS) {
             if (wc.opcode == IBV_WC_RECV) {  // recv RDMA read/write request
-                INFO("RDMA Send completed successfully, recved {}", wc.byte_len);
                 const RemoteMetaRequest *request = GetRemoteMetaRequest(recv_buffer_[wc.wr_id]);
 
-                INFO("Received remote meta request OP {}", op_name(request->op()));
+                DEBUG("Received remote meta request OP {}", op_name(request->op()));
 
                 switch (request->op()) {
                     case OP_RDMA_WRITE: {
@@ -412,7 +411,7 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                         break;
                 }
 
-                INFO("ready for next request");
+                DEBUG("ready for next request");
                 if (prepare_recv_rdma_request(wc.wr_id) < 0) {
                     ERROR("Failed to prepare recv rdma request");
                     return;
@@ -434,7 +433,7 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
             else if (wc.opcode == IBV_WC_RDMA_WRITE || wc.opcode == IBV_WC_RDMA_READ) {
                 // some RDMA write(read cache WRs) is finished
 
-                INFO("RDMA OPS done wr_id: {}, {}", wc.wr_id, (int)wc.opcode);
+                DEBUG("RDMA OPS done wr_id: {}, {}", wc.wr_id, (int)wc.opcode);
                 assert(outstanding_rdma_ops_ >= 0);
                 outstanding_rdma_ops_ -= MAX_WR_BATCH;
 
@@ -675,7 +674,7 @@ void Client::perform_batch_rdma(const RemoteMetaRequest *remote_meta_req,
 }
 
 int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
-    INFO("do rdma write... num of keys: {}", remote_meta_req->keys()->size());
+    DEBUG("do rdma write... num of keys: {}", remote_meta_req->keys()->size());
     if (remote_meta_req->keys()->size() != remote_meta_req->remote_addrs()->size()) {
         ERROR("keys size and remote_addrs size mismatch");
         return INVALID_REQ;
@@ -712,7 +711,7 @@ int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
 }
 
 int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
-    INFO("do rdma read... num of keys: {}", remote_meta_req->keys()->size());
+    DEBUG("do rdma read... num of keys: {}", remote_meta_req->keys()->size());
 
     if (remote_meta_req->keys()->size() != remote_meta_req->remote_addrs()->size()) {
         ERROR("keys size and remote_addrs size mismatch");
