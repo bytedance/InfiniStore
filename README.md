@@ -4,9 +4,9 @@
 
 # What's InfiniStore
 
-InfiniStore is an open-source high-performance KV store. It's designed to support LLM Inference clusters, whether the cluster is in prefill-decoding disaggregation mode or not. InfiniStore provides high-performance and low-latency KV cache transfer and KV cache reuse among inference nodes in the cluster. 
+InfiniStore is an open-source high-performance KV store. It's designed to support LLM Inference clusters, whether the cluster is in prefill-decoding disaggregation mode or not. InfiniStore provides high-performance and low-latency KV cache transfer and KV cache reuse among inference nodes in the cluster.
 
-In addition to inference clusters, InfiniStore can also be used as a standalone KV store to integrate with any other LLM training or inference services. 
+In addition to inference clusters, InfiniStore can also be used as a standalone KV store to integrate with any other LLM training or inference services.
 
 # Usage
 
@@ -103,7 +103,7 @@ The setup will varies depending on the specific vLLM cluster configurations. But
 * Install LMCache on all nodes
 * Install InfiniStore on all nodes
 
-Because this setup is a complicated process, we've made a seperate demo repo for the PD disaggregation setup. 
+Because this setup is a complicated process, we've made a separate demo repo for the PD disaggregation setup.
 
 Please refer to the repo for the details:  https://github.com/bytedance-iaas/splitwise-demos
 
@@ -131,4 +131,4 @@ pre-commit run --all-files
 
 4. **Submit PR**
 
-If you code change passes both unit tests and pre-commit checks, submit the PR. 
+If you code change passes both unit tests and pre-commit checks, submit the PR.
