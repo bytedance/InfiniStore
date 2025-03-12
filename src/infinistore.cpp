@@ -208,7 +208,7 @@ void on_chunk_write(uv_write_t *req, int status) {
     }
 
     if (ctx->offset == ctx->total_size) {
-        INFO("write done");
+        DEBUG("write done");
         ctx->client->reset_client_read_state();
         free(req);
         delete ctx;
@@ -235,7 +235,7 @@ void on_head_write(uv_write_t *req, int status) {
         return;
     }
 
-    INFO("header write done");
+    DEBUG("header write done");
     size_t remain = ctx->total_size;
     size_t send_size = MIN(remain, MAX_SEND_SIZE);
     uv_buf_t buf = uv_buf_init((char *)ctx->ptr->ptr, send_size);
@@ -247,7 +247,7 @@ void on_head_write(uv_write_t *req, int status) {
 }
 
 int Client::tcp_payload_request(const TCPPayloadRequest *req) {
-    INFO("do tcp_payload_request... {}", op_name(req->op()));
+    DEBUG("do tcp_payload_request... {}", op_name(req->op()));
 
     switch (req->op()) {
         case OP_TCP_PUT: {
@@ -260,9 +260,9 @@ int Client::tcp_payload_request(const TCPPayloadRequest *req) {
                 ERROR("Failed to allocate memory");
                 return OUT_OF_MEMORY;
             }
-            INFO("allocated memory: addr: {}, lkey: {}, rkey: {}", current_tcp_task_->ptr,
-                 mm->get_lkey(current_tcp_task_->pool_idx),
-                 mm->get_rkey(current_tcp_task_->pool_idx));
+            DEBUG("allocated memory: addr: {}, lkey: {}, rkey: {}", current_tcp_task_->ptr,
+                  mm->get_lkey(current_tcp_task_->pool_idx),
+                  mm->get_rkey(current_tcp_task_->pool_idx));
 
             kv_map[req->key()->str()] = current_tcp_task_;
             // set state machine
@@ -365,47 +365,6 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                         }
                         break;
                     }
-                    case OP_RDMA_ALLOCATE: {
-                        auto start = std::chrono::high_resolution_clock::now();
-                        allocate_rdma(request);
-                        INFO("allocate_rdma time: {} micro seconds",
-                             std::chrono::duration_cast<std::chrono::microseconds>(
-                                 std::chrono::high_resolution_clock::now() - start)
-                                 .count());
-                        break;
-                    }
-                    case OP_RDMA_WRITE_COMMIT: {
-                        INFO("RDMA write commit, #addrs: {}", request->remote_addrs()->size());
-                        if (request->remote_addrs()->size() == 0) {
-                            ERROR("remote_addrs size should not be 0");
-                        }
-                        for (auto addr : *request->remote_addrs()) {
-                            auto it = inflight_rdma_writes.find(addr);
-                            if (it == inflight_rdma_writes.end()) {
-                                ERROR("commit msg: Key not found: {}", addr);
-                                continue;
-                            }
-                            it->second->committed = true;
-                            inflight_rdma_writes.erase(it);
-                        }
-
-                        // send ACK
-                        struct ibv_send_wr wr = {0};
-                        struct ibv_send_wr *bad_wr = NULL;
-                        wr.wr_id = 1;
-                        wr.opcode = IBV_WR_SEND_WITH_IMM;
-                        wr.imm_data = 1234;
-                        wr.send_flags = 0;
-                        wr.sg_list = NULL;
-                        wr.num_sge = 0;
-                        wr.next = NULL;
-                        int ret = ibv_post_send(qp_, &wr, &bad_wr);
-                        if (ret) {
-                            ERROR("Failed to send WITH_IMM message: {}", strerror(ret));
-                        }
-                        DEBUG("inflight_rdma_kv_map size: {}", inflight_rdma_writes.size());
-                        break;
-                    }
                     default:
                         ERROR("Unexpected request op: {}", request->op());
                         break;
@@ -489,84 +448,6 @@ void add_mempool_completion(uv_work_t *req, int status) {
     extend_in_flight = false;
     mm->need_extend = false;
     delete req;
-}
-
-int Client::allocate_rdma(const RemoteMetaRequest *req) {
-    INFO("do allocate_rdma...");
-
-    FixedBufferAllocator allocator(send_buffer_, PROTOCOL_BUFFER_SIZE);
-    FlatBufferBuilder builder(64 << 10, &allocator);
-
-    int key_idx = 0;
-    int block_size = req->block_size();
-    std::vector<RemoteBlock> blocks;
-    blocks.reserve(req->keys()->size());
-
-    unsigned int error_code = FINISH;
-    if (!mm->allocate(block_size, req->keys()->size(),
-                      [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
-                          // FIXME: rdma write should have a msg to update committed to true
-
-                          const auto *key = req->keys()->Get(key_idx);
-
-                          if (kv_map.count(key->str()) != 0) {
-                              // WARN("rdma_write: Key already exists: {}", key->str());
-                              // put fake addr, and send to client
-                              blocks.push_back(FAKE_REMOTE_BLOCK);
-                              key_idx++;
-                              return;
-                          }
-
-                          auto ptr =
-                              boost::intrusive_ptr<PTR>(new PTR(addr, block_size, pool_idx, false));
-
-                          // save in kv_map, but committed is false, no one can read it
-                          kv_map[key->str()] = ptr;
-
-                          // save in inflight_rdma_kv_map, when write is finished, we can merge it
-                          // into kv_map
-                          inflight_rdma_writes[(uintptr_t)addr] = ptr;
-
-                          blocks.push_back(RemoteBlock(rkey, (uint64_t)addr));
-                          key_idx++;
-                      })) {
-        ERROR("Failed to allocate memory");
-        error_code = OUT_OF_MEMORY;
-        blocks.clear();
-    }
-
-    if (global_config.auto_increase && mm->need_extend && !extend_in_flight) {
-        INFO("Extend another mempool");
-        uv_work_t *req = new uv_work_t();
-        uv_queue_work(loop, req, add_mempool, add_mempool_completion);
-        extend_in_flight = true;
-    }
-
-    auto resp = CreateRdmaAllocateResponseDirect(builder, &blocks, error_code);
-    builder.Finish(resp);
-
-    // send RDMA request
-    struct ibv_sge sge = {0};
-    struct ibv_send_wr wr = {0};
-    struct ibv_send_wr *bad_wr = NULL;
-
-    sge.addr = (uintptr_t)builder.GetBufferPointer();
-    sge.length = builder.GetSize();
-    sge.lkey = send_mr_->lkey;
-
-    wr.wr_id = 0;
-    wr.opcode = IBV_WR_SEND;
-    wr.sg_list = &sge;
-    wr.num_sge = 1;
-    wr.send_flags = IBV_SEND_SIGNALED;
-
-    int ret = ibv_post_send(qp_, &wr, &bad_wr);
-    if (ret) {
-        ERROR("Failed to post RDMA send :{}", strerror(ret));
-        return -1;
-    }
-
-    return 0;
 }
 
 int Client::prepare_recv_rdma_request(int buf_idx) {
@@ -1116,7 +997,7 @@ void handle_request(uv_stream_t *stream, client_t *client) {
         }
         case OP_CHECK_EXIST: {
             std::string key_to_check(client->tcp_recv_buffer_, client->expected_bytes_);
-            INFO("check key: {}", key_to_check);
+            DEBUG("check key: {}", key_to_check);
             error_code = client->check_key(key_to_check);
             break;
         }
@@ -1127,13 +1008,13 @@ void handle_request(uv_stream_t *stream, client_t *client) {
             break;
         }
         case OP_DELETE_KEYS: {
-            INFO("delete keys...");
+            DEBUG("delete keys...");
             const DeleteKeysRequest *request = GetDeleteKeysRequest(client->tcp_recv_buffer_);
             error_code = client->delete_keys(request);
             break;
         }
         case OP_TCP_PAYLOAD: {
-            INFO("TCP GET/PUT data...");
+            DEBUG("TCP GET/PUT data...");
             const TCPPayloadRequest *request = GetTCPPayloadRequest(client->tcp_recv_buffer_);
             error_code = client->tcp_payload_request(request);
             break;
@@ -1210,14 +1091,11 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
             }
             case READ_VALUE_THROUGH_TCP: {
                 size_t to_copy = MIN(nread - offset, client->expected_bytes_ - client->bytes_read_);
-                INFO("to_copy: {}, bytes_read: {}, expected_bytes: {}", to_copy,
-                     client->bytes_read_, client->expected_bytes_);
                 memcpy(client->current_tcp_task_->ptr + client->bytes_read_, buf->base + offset,
                        to_copy);
                 client->bytes_read_ += to_copy;
                 offset += to_copy;
                 if (client->bytes_read_ == client->expected_bytes_) {
-                    INFO("value read done, size {}", client->expected_bytes_);
                     client->current_tcp_task_->committed = true;
                     client->current_tcp_task_.reset();
                     client->send_resp(FINISH, NULL, 0);

@@ -5,6 +5,8 @@ from infinistore import (
 import infinistore
 import torch
 import time
+import asyncio
+import threading
 
 
 def generate_random_string(length):
@@ -16,35 +18,45 @@ def generate_random_string(length):
     return random_string
 
 
+def start_loop(loop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+
+loop = asyncio.new_event_loop()
+t = threading.Thread(target=start_loop, args=(loop,))
+t.start()
+
+
+# run is a blocking function, but it could invoke RDMA operations asynchronously
+# by using asyncio.run_coroutine_threadsafe and wait for the result by future.result()
 def run(conn, src_device="cuda:0", dst_device="cuda:2"):
     src_tensor = torch.tensor(
         [i for i in range(4096)], device=src_device, dtype=torch.float32
     )
-    conn.register_mr(src_tensor)
+    conn.register_mr(
+        src_tensor.data_ptr(), src_tensor.numel() * src_tensor.element_size()
+    )
 
-    keys = ["key1", "key2", "key3"]
-    remote_addr = conn.allocate_rdma(
-        keys, 1024 * 4
-    )  # 1024(block_size) * 4(element size)
-    # print(f"remote_addr: {remote_addr}")
+    keys_offsets = [("key1", 0), ("key2", 1024 * 4), ("key3", 2048 * 4)]
     now = time.time()
 
-    conn.rdma_write_cache(src_tensor, [0, 1024, 2048], 1024, remote_addr)
-
+    future = asyncio.run_coroutine_threadsafe(
+        conn.rdma_write_cache_async(keys_offsets, 1024 * 4, src_tensor.data_ptr()), loop
+    )
+    future.result()
     print(f"write elapse time is {time.time() - now}")
 
-    before_sync = time.time()
-    conn.sync()
-    print(f"sync elapse time is {time.time() - before_sync}")
-
     dst_tensor = torch.zeros(4096, device=dst_device, dtype=torch.float32)
+    conn.register_mr(
+        dst_tensor.data_ptr(), dst_tensor.numel() * dst_tensor.element_size()
+    )
 
-    conn.register_mr(dst_tensor)
     now = time.time()
-
-    conn.read_cache(dst_tensor, [("key1", 0), ("key2", 1024)], 1024)
-
-    conn.sync()
+    future = asyncio.run_coroutine_threadsafe(
+        conn.rdma_read_cache_async(keys_offsets, 1024 * 4, dst_tensor.data_ptr()), loop
+    )
+    future.result()
     print(f"read elapse time is {time.time() - now}")
 
     assert torch.equal(src_tensor[0:1024].cpu(), dst_tensor[0:1024].cpu())
@@ -62,6 +74,7 @@ if __name__ == "__main__":
         dev_name="mlx5_0",
     )
     rdma_conn = InfinityConnection(config)
+
     try:
         rdma_conn.connect()
         m = [
@@ -73,5 +86,8 @@ if __name__ == "__main__":
         for src, dst in m:
             print(f"rdma connection: {src} -> {dst}")
             run(rdma_conn, src, dst)
+
     finally:
         rdma_conn.close()
+        loop.call_soon_threadsafe(loop.stop)
+        t.join()

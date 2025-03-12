@@ -102,17 +102,14 @@ class Connection {
     // close cq_handler thread
     void close_conn();
     int init_connection(client_config_t config);
-    // async rw local cpu memory, even rw_local returns, it is not guaranteed that
-    // the operation is completed until sync_local is recved.
-    int rw_local(char op, const std::vector<block_t> &blocks, int block_size, void *ptr,
-                 int device_id);
     int setup_rdma(client_config_t config);
-    int r_rdma_async(std::vector<block_t> &blocks, int block_size, void *base_ptr,
-                     std::function<void(unsigned int)> callback);
-    int w_tcp(const std::string &key, void *ptr, size_t size);
-    std::vector<unsigned char> *r_tcp(const std::string &key);
+    int r_rdma_async(const std::vector<std::string> &keys, const std::vector<size_t> offsets,
+                     int block_size, void *base_ptr, std::function<void(unsigned int)> callback);
     int w_rdma_async(const std::vector<std::string> &keys, const std::vector<size_t> offsets,
                      int block_size, void *base_ptr, std::function<void(int)> callback);
+    int w_tcp(const std::string &key, void *ptr, size_t size);
+    std::vector<unsigned char> *r_tcp(const std::string &key);
+
     int check_exist(std::string key);
     int get_match_last_index(std::vector<std::string> &keys);
     int delete_keys(const std::vector<std::string> &keys);

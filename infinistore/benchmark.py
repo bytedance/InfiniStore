@@ -7,6 +7,8 @@ import random
 import string
 import argparse
 import uuid
+import asyncio
+import threading
 
 
 def parse_args():
@@ -110,6 +112,16 @@ def generate_uuid():
     return str(uuid.uuid4())
 
 
+def start_loop(loop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+
+loop = asyncio.new_event_loop()
+t = threading.Thread(target=start_loop, args=(loop,))
+t.start()
+
+
 def run(args):
     config = infinistore.ClientConfig(
         host_addr=args.server,
@@ -143,22 +155,24 @@ def run(args):
         torch.cuda.synchronize(src_tensor.device)
         torch.cuda.synchronize(dst_tensor.device)
         if args.rdma:
-            conn.register_mr(src_tensor)
-            conn.register_mr(dst_tensor)
+            conn.register_mr(
+                src_tensor.data_ptr(), src_tensor.numel() * src_tensor.element_size()
+            )
+            conn.register_mr(
+                dst_tensor.data_ptr(), dst_tensor.numel() * dst_tensor.element_size()
+            )
 
         # blocks = [(keys[i], offset_blocks[i]) for i in range(num_of_blocks)]
         write_sum = 0.0
         read_sum = 0.0
 
+        element_size = src_tensor.element_size()
         for _ in range(args.iteration):
             keys = [generate_uuid() for i in range(num_of_blocks)]
-            offset_blocks = [i * block_size for i in range(num_of_blocks)]
+            offsets = [i * block_size * element_size for i in range(num_of_blocks)]
             # zip keys and offset_blocks
-            blocks = list(zip(keys, offset_blocks))
-
-            if args.rdma:
-                remote_addrs = conn.allocate_rdma(keys, block_size * 4)
-
+            # blocks = list(zip(keys, offset_blocks))
+            blocks = zip(keys, offsets)
             steps = args.steps
             # simulate we have <steps> layers, this steps should be less then MAX_WR_SIZE
             while len(blocks) % steps != 0 and steps > 1:
@@ -169,6 +183,9 @@ def run(args):
 
             start = time.time()
 
+            # fixme:
+            offset_blocks = []
+            remote_addrs = []
             for i in range(steps):
                 if args.rdma:
                     conn.rdma_write_cache(
@@ -204,6 +221,8 @@ def run(args):
         assert torch.equal(src_tensor.cpu(), dst_tensor.cpu())
     finally:
         conn.close()
+        loop.call_soon_threadsafe(loop.stop)
+        t.join()
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ async def main():
     for i in range(N):
         tasks.append(
             rdma_conn.rdma_write_cache_async(
-                [key + str(i)], [0], len(src), get_ptr(src)
+                [(key + str(i), 0)], len(src), get_ptr(src)
             )
         )
     await asyncio.gather(*tasks, return_exceptions=True)
@@ -69,12 +69,10 @@ async def main():
         tasks.append(
             rdma_conn.rdma_read_cache_async([(key + str(i), 0)], len(dst), get_ptr(dst))
         )
-        # await rdma_conn.rdma_read_cache_async([(key + str(i), 0)], len(dst), get_ptr(dst))
     await asyncio.gather(*tasks, return_exceptions=True)
     print("read Time taken: ", time.time() - now)
 
-    # assert src == dst
-
+    assert src == dst
     rdma_conn.close()
 
 

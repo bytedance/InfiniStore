@@ -44,24 +44,10 @@ PYBIND11_MODULE(_infinistore, m) {
         .def_readwrite("link_type", &client_config_t::link_type)
         .def_readwrite("host_addr", &client_config_t::host_addr);
 
-    PYBIND11_NUMPY_DTYPE(remote_block_t, rkey, remote_addr);
-
     py::class_<Connection, std::shared_ptr<Connection>>(m, "Connection")
         .def(py::init<>())
         .def("close", &Connection::close_conn, py::call_guard<py::gil_scoped_release>(),
              "close the connection")
-        .def(
-            "r_rdma_async",
-            [](Connection &self, const std::vector<std::tuple<std::string, unsigned long>> &blocks,
-               int block_size, uintptr_t ptr, std::function<void(unsigned int)> callback) {
-                std::vector<block_t> c_blocks;
-                for (const auto &block : blocks) {
-                    c_blocks.push_back(block_t{std::get<0>(block), std::get<1>(block)});
-                }
-                return self.r_rdma_async(c_blocks, block_size, (void *)ptr, callback);
-            },
-            py::call_guard<py::gil_scoped_release>(), "Read remote memory asynchronously")
-
         .def(
             "w_tcp",
             [](Connection &self, const std::string &key, uintptr_t ptr, size_t size) {
@@ -81,10 +67,17 @@ PYBIND11_MODULE(_infinistore, m) {
             [](Connection &self, const std::vector<std::string> &keys,
                const std::vector<size_t> offsets, int block_size, uintptr_t base_ptr,
                std::function<void(int)> callback) {
-                // FIXME: callback function
                 return self.w_rdma_async(keys, offsets, block_size, (void *)base_ptr, callback);
             },
-            py::call_guard<py::gil_scoped_release>(), "write rdma async2")
+            py::call_guard<py::gil_scoped_release>(), "write rdma async")
+        .def(
+            "r_rdma_async",
+            [](Connection &self, const std::vector<std::string> &keys,
+               const std::vector<size_t> offsets, int block_size, uintptr_t base_ptr,
+               std::function<void(unsigned int)> callback) {
+                return self.r_rdma_async(keys, offsets, block_size, (void *)base_ptr, callback);
+            },
+            py::call_guard<py::gil_scoped_release>(), "Read remote memory asynchronously")
         .def("init_connection", &Connection::init_connection,
              py::call_guard<py::gil_scoped_release>(), "init connection")
         .def("setup_rdma", &Connection::setup_rdma, py::call_guard<py::gil_scoped_release>(),

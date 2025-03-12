@@ -368,7 +368,7 @@ class InfinityConnection:
             raise Exception(f"Failed to write to infinistore, ret = {ret}")
 
     async def rdma_write_cache_async(
-        self, keys: List[str], offsets: List[str], block_size: int, ptr: int
+        self, blocks: List[Tuple[str, int]], block_size: int, ptr: int
     ):
         if not self.rdma_connected:
             raise Exception("this function is only valid for connected rdma")
@@ -376,6 +376,8 @@ class InfinityConnection:
         await self.semaphore.acquire()
         loop = asyncio.get_running_loop()
         future = loop.create_future()
+
+        keys, offsets = zip(*blocks)
 
         def _callback(code):
             if code != 200:
@@ -423,8 +425,10 @@ class InfinityConnection:
                 loop.call_soon_threadsafe(future.set_result, code)
             self.semaphore.release()
 
+        keys, offsets = zip(*blocks)
         ret = self.conn.r_rdma_async(
-            blocks,
+            keys,
+            offsets,
             block_size,
             ptr,
             _callback,

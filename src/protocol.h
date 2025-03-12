@@ -36,10 +36,8 @@ using namespace flatbuffers;
 #define MAGIC_SIZE 4
 
 #define OP_RDMA_EXCHANGE 'E'
-#define OP_RDMA_ALLOCATE 'D'
 #define OP_RDMA_READ 'A'
 #define OP_RDMA_WRITE 'W'
-#define OP_RDMA_WRITE_COMMIT 'T'
 #define OP_CHECK_EXIST 'C'
 #define OP_GET_MATCH_LAST_IDX 'M'
 #define OP_DELETE_KEYS 'X'
@@ -73,18 +71,6 @@ typedef struct __attribute__((packed)) {
     unsigned int body_size;
 } header_t;
 
-// remote_block_t is used to to talk to PYTHON layer. not used in RDMA/TCP layer.
-typedef struct {
-    uint32_t rkey;
-    uintptr_t remote_addr;
-} remote_block_t;
-
-// block_t is used to to talk to PYTHON layer. not used in RDMA/TCP layer.
-typedef struct {
-    std::string key;
-    unsigned long offset;
-} block_t;
-
 typedef struct __attribute__((packed)) rdma_conn_info_t {
     uint32_t qpn;
     uint32_t psn;
@@ -107,8 +93,5 @@ class FixedBufferAllocator : public Allocator {
     size_t size_;
     size_t offset_;
 };
-
-const RemoteBlock FAKE_REMOTE_BLOCK = RemoteBlock(0, 0);
-bool is_fake_remote_block(remote_block_t& block);
 
 #endif

@@ -881,7 +881,8 @@ int Connection::w_rdma_async(const std::vector<std::string> &keys,
     return 0;
 }
 
-int Connection::r_rdma_async(std::vector<block_t> &blocks, int block_size, void *base_ptr,
+int Connection::r_rdma_async(const std::vector<std::string> &keys,
+                             const std::vector<size_t> offsets, int block_size, void *base_ptr,
                              std::function<void(unsigned int code)> callback) {
     assert(base_ptr != NULL);
 
@@ -897,12 +898,12 @@ int Connection::r_rdma_async(std::vector<block_t> &blocks, int block_size, void 
     auto *info = new rdma_read_info([callback](unsigned int code) { callback(code); });
     post_recv_ack(info);
 
-    std::vector<std::string> keys;
+    // std::vector<std::string> keys;
     std::vector<uintptr_t> remote_addrs;
-    for (auto &block : blocks) {
-        keys.push_back(block.key);
-        remote_addrs.push_back((uintptr_t)(base_ptr + block.offset));
+    for (auto &offset : offsets) {
+        remote_addrs.push_back((uintptr_t)(base_ptr + offset));
     }
+
     /*
     remote_meta_req = {
         .keys = keys,
