@@ -322,8 +322,6 @@ void Client::post_ack(int return_code) {
 }
 
 void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
-    DEBUG("Polling CQ");
-
     // TODO: handle completion
     if (status < 0) {
         ERROR("Poll error: {}", uv_strerror(status));
@@ -392,7 +390,6 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
             else if (wc.opcode == IBV_WC_RDMA_WRITE || wc.opcode == IBV_WC_RDMA_READ) {
                 // some RDMA write(read cache WRs) is finished
 
-                DEBUG("RDMA OPS done wr_id: {}, {}", wc.wr_id, (int)wc.opcode);
                 assert(outstanding_rdma_ops_ >= 0);
                 outstanding_rdma_ops_ -= MAX_WR_BATCH;
 
@@ -616,9 +613,6 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         }
 
         const auto &ptr = it->second;
-
-        DEBUG("rkey: {}, local_addr: {}, size : {}", mm->get_lkey(ptr->pool_idx),
-              (uintptr_t)ptr->ptr, ptr->size);
 
         inflight_rdma_reads->push_back(ptr);
     }
