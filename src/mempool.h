@@ -66,11 +66,11 @@ class MM {
     bool allocate(size_t size, size_t n, AllocationCallback callback);
     void deallocate(void* ptr, size_t size, int pool_idx);
     uint32_t get_lkey(int pool_idx) const {
-        assert(pool_idx >= 0 && pool_idx < mempools_.size());
+        assert(pool_idx >= 0 && (size_t)pool_idx < mempools_.size());
         return mempools_[pool_idx]->get_lkey();
     }
     uint32_t get_rkey(int pool_idx) const {
-        assert(pool_idx >= 0 && pool_idx < mempools_.size());
+        assert(pool_idx >= 0 && (size_t)pool_idx < mempools_.size());
         return mempools_[pool_idx]->get_rkey();
     }
 

@@ -1,0 +1,7 @@
+table TCPPayloadRequest {
+  key: string;
+  value_length: int;
+  op: byte;
+}
+
+root_type TCPPayloadRequest;

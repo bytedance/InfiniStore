@@ -1,19 +1,15 @@
-import infinistore
 import uuid
 from infinistore import (
     register_server,
     purge_kv_map,
     get_kvmap_len,
-    check_supported,
     ServerConfig,
     Logger,
 )
-
 import asyncio
 import uvloop
 from fastapi import FastAPI
 import uvicorn
-import torch
 import argparse
 import logging
 import os
@@ -37,75 +33,9 @@ def generate_uuid():
     return str(uuid.uuid4())
 
 
-@app.post("/selftest/{number}")
-async def selftest(number: int):
-    Logger.info("selftest")
-
-    config = infinistore.ClientConfig(
-        host_addr="127.0.0.1",
-        service_port=number,
-        log_level="info",
-        connection_type=infinistore.TYPE_RDMA,
-        ib_port=1,
-        link_type=infinistore.LINK_ETHERNET,
-        dev_name="mlx5_2",
-    )
-
-    rdma_conn = infinistore.InfinityConnection(config)
-
-    await rdma_conn.connect_async()
-
-    def blocking_io(rdma_conn):
-        src_tensor = torch.tensor(
-            [i for i in range(4096)], device="cpu", dtype=torch.float32
-        )
-        dst_tensor = torch.zeros(4096, device="cpu", dtype=torch.float32)
-        rdma_conn.register_mr(src_tensor)
-        rdma_conn.register_mr(dst_tensor)
-        return src_tensor, dst_tensor
-
-    src_tensor, dst_tensor = await asyncio.to_thread(blocking_io, rdma_conn)
-
-    # keys = ["key1", "key2", "key3"]
-    keys = [generate_uuid() for i in range(3)]
-    remote_addr = await rdma_conn.allocate_rdma_async(keys, 1024 * 4)
-    print(f"remote addrs is {remote_addr}")
-
-    await rdma_conn.rdma_write_cache_async(src_tensor, [0, 1024], 1024, remote_addr[:2])
-    await rdma_conn.rdma_write_cache_async(src_tensor, [2048], 1024, remote_addr[2:])
-
-    # # await asyncio.gather(rdma_conn.rdma_write_cache_async(src_tensor, [0, 1024], 1024, remote_addr[:2]),
-    # #                rdma_conn.rdma_write_cache_async(src_tensor, [2048], 1024, remote_addr[2:]))
-
-    await rdma_conn.read_cache_async(
-        dst_tensor, [(keys[0], 0), (keys[1], 1024), (keys[2], 2048)], 1024
-    )
-
-    # put assert into asyncio.to_thread
-
-    assert await asyncio.to_thread(torch.equal, src_tensor[0:3072], dst_tensor[0:3072])
-
-    # assert torch.equal(,
-    rdma_conn.close()
-    return {"status": "ok"}
-
-
 @app.get("/kvmap_len")
 async def kvmap_len():
     return {"len": get_kvmap_len()}
-
-
-def check_p2p_access():
-    num_devices = torch.cuda.device_count()
-    for i in range(num_devices):
-        for j in range(num_devices):
-            if i != j:
-                can_access = torch.cuda.can_device_access_peer(i, j)
-                if can_access:
-                    # print(f"Peer access supported between device {i} and {j}")
-                    pass
-                else:
-                    Logger.warn(f"Peer access NOT supported between device {i} and {j}")
 
 
 def parse_args():
@@ -213,8 +143,6 @@ def main():
         auto_increase=args.auto_increase,
     )
     config.verify()
-    # check_p2p_access()
-    check_supported()
 
     Logger.set_log_level(config.log_level)
     Logger.info(config)

@@ -54,7 +54,7 @@ MemoryPool::~MemoryPool() {
 
 int MemoryPool::allocate(size_t size, size_t n, SimpleAllocationCallback callback) {
     size_t required_blocks = (size + block_size_ - 1) / block_size_;  // round up
-    int num_allocated = 0;
+    size_t num_allocated = 0;
 
     if (required_blocks > total_blocks_) {
         return 0;
@@ -157,8 +157,8 @@ void MM::add_mempool(size_t pool_size, size_t block_size, struct ibv_pd* pd) {
 
 bool MM::allocate(size_t size, size_t n, AllocationCallback callback) {
     bool allocated = false;
-    int mempool_cnt = mempools_.size();
-    for (int i = 0; i < mempool_cnt; ++i) {
+    size_t mempool_cnt = mempools_.size();
+    for (size_t i = 0; i < mempool_cnt; ++i) {
         // create a new callback from the original callback
         auto simple_callback = [callback, i](void* ptr, uint32_t lkey, uint32_t rkey) {
             callback(ptr, lkey, rkey, i);

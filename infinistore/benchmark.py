@@ -7,6 +7,8 @@ import random
 import string
 import argparse
 import uuid
+import asyncio
+import threading
 
 
 def parse_args():
@@ -17,7 +19,7 @@ def parse_args():
         required=False,
         action="store_true",
         help="use rdma connection, default False",
-        default=True,
+        default=False,
     )
 
     parser.add_argument(
@@ -110,6 +112,16 @@ def generate_uuid():
     return str(uuid.uuid4())
 
 
+def start_loop(loop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+
+loop = asyncio.new_event_loop()
+t = threading.Thread(target=start_loop, args=(loop,))
+t.start()
+
+
 def run(args):
     config = infinistore.ClientConfig(
         host_addr=args.server,
@@ -120,16 +132,24 @@ def run(args):
         log_level="warning",
     )
 
-    config.connection_type = infinistore.TYPE_RDMA
+    if args.rdma:
+        config.connection_type = infinistore.TYPE_RDMA
+    else:
+        config.connection_type = infinistore.TYPE_TCP
 
     conn = infinistore.InfinityConnection(config)
     try:
         conn.connect()
 
-        src_device = "cuda:" + str(args.src_gpu)
-        dst_device = "cuda:" + str(args.dst_gpu)
+        # rdma support GPUDirect RDMA, so we can use cuda tensor
+        if args.rdma:
+            src_device = "cuda:" + str(args.src_gpu)
+            dst_device = "cuda:" + str(args.dst_gpu)
+        else:
+            src_device = "cpu"
+            dst_device = "cpu"
 
-        block_size = args.block_size * 1024 // 4
+        block_size = args.block_size * 1024 // 4  # element size is 4 bytes
         num_of_blocks = args.size * 1024 * 1024 // (args.block_size * 1024)
 
         src_tensor = torch.rand(
@@ -140,25 +160,28 @@ def run(args):
             num_of_blocks * block_size, device=dst_device, dtype=torch.float32
         )
 
-        torch.cuda.synchronize(src_tensor.device)
-        torch.cuda.synchronize(dst_tensor.device)
         if args.rdma:
-            conn.register_mr(src_tensor)
-            conn.register_mr(dst_tensor)
+            torch.cuda.synchronize(src_tensor.device)
+            torch.cuda.synchronize(dst_tensor.device)
+            conn.register_mr(
+                src_tensor.data_ptr(), src_tensor.numel() * src_tensor.element_size()
+            )
+            conn.register_mr(
+                dst_tensor.data_ptr(), dst_tensor.numel() * dst_tensor.element_size()
+            )
 
         # blocks = [(keys[i], offset_blocks[i]) for i in range(num_of_blocks)]
         write_sum = 0.0
         read_sum = 0.0
 
+        element_size = src_tensor.element_size()
+
         for _ in range(args.iteration):
             keys = [generate_uuid() for i in range(num_of_blocks)]
-            offset_blocks = [i * block_size for i in range(num_of_blocks)]
+            offsets = [i * block_size * element_size for i in range(num_of_blocks)]
             # zip keys and offset_blocks
-            blocks = list(zip(keys, offset_blocks))
-
-            if args.rdma:
-                remote_addrs = conn.allocate_rdma(keys, block_size * 4)
-
+            # blocks = list(zip(keys, offset_blocks))
+            blocks = list(zip(keys, offsets))
             steps = args.steps
             # simulate we have <steps> layers, this steps should be less then MAX_WR_SIZE
             while len(blocks) % steps != 0 and steps > 1:
@@ -169,23 +192,64 @@ def run(args):
 
             start = time.time()
 
+            futures = []
             for i in range(steps):
                 if args.rdma:
-                    conn.rdma_write_cache(
-                        src_tensor,
-                        offset_blocks[i * n : i * n + n],
-                        block_size,
-                        remote_addrs[i * n : i * n + n],
+                    future = asyncio.run_coroutine_threadsafe(
+                        conn.rdma_write_cache_async(
+                            blocks[i * n : i * n + n],
+                            block_size * element_size,
+                            src_tensor.data_ptr(),
+                        ),
+                        loop,
                     )
-            conn.sync()
-            # print(f"write  takes {time.time() - start} seconds")
+                    futures.append(future)
+                else:
+                    for j in range(n):
+                        key = blocks[i * n + j][0]
+                        ptr = src_tensor.data_ptr() + blocks[i * n + j][1]
+                        conn.tcp_write_cache(key, ptr, block_size * element_size)
+
+            # wait for all the futures to finish
+            if args.rdma:
+                for future in futures:
+                    future.result()
+            else:  # TCP
+                pass
 
             mid = time.time()
             write_sum += mid - start
+            futures = []
             for i in range(steps):
-                conn.read_cache(dst_tensor, blocks[i * n : i * n + n], block_size)
+                if args.rdma:
+                    future = asyncio.run_coroutine_threadsafe(
+                        conn.rdma_read_cache_async(
+                            blocks[i * n : i * n + n],
+                            block_size * element_size,
+                            dst_tensor.data_ptr(),
+                        ),
+                        loop,
+                    )
+                    futures.append(future)
+                else:
+                    for j in range(n):
+                        key = blocks[i * n + j][0]
+                        # ptr = dst_tensor.data_ptr() + blocks[i*n + j][1]
+                        ret = conn.tcp_read_cache(key)
+                        assert len(ret) == block_size * element_size
+                        # copy data from ret_value to dst_tensor
+                        ret_tensor = torch.from_numpy(ret).view(torch.float32)
+                        offset_in_tensor = blocks[i * n + j][1] // element_size
+                        dst_tensor[offset_in_tensor : offset_in_tensor + block_size] = (
+                            ret_tensor
+                        )
 
-            conn.sync()
+            if args.rdma:
+                for future in futures:
+                    future.result()
+            else:  # TCP
+                pass
+
             end = time.time()
             read_sum += end - mid
 
@@ -200,10 +264,12 @@ def run(args):
                 args.size * args.iteration / read_sum,
             )
         )
-
+        # super important to compare the data
         assert torch.equal(src_tensor.cpu(), dst_tensor.cpu())
     finally:
         conn.close()
+        loop.call_soon_threadsafe(loop.stop)
+        t.join()
 
 
 if __name__ == "__main__":
