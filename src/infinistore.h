@@ -2,6 +2,8 @@
 #define INFINISTORE_H
 #include <uv.h>
 
+#include <deque>
+
 #include "config.h"
 #include "log.h"
 #include "mempool.h"
@@ -23,8 +25,6 @@ extern ibv_mtu active_mtu;
 
 // indicate if the MM extend is in flight
 extern bool extend_in_flight;
-// indicate the number of cudaIpcOpenMemHandle
-extern std::atomic<unsigned int> opened_ipc;
 
 // PTR is shared by kv_map and inflight_rdma_kv_map
 class PTR : public IntrusivePtrTarget {
@@ -32,9 +32,10 @@ class PTR : public IntrusivePtrTarget {
     void *ptr = nullptr;
     size_t size;
     int pool_idx;
-    bool committed;
-    PTR(void *ptr, size_t size, int pool_idx, bool committed = false)
-        : ptr(ptr), size(size), pool_idx(pool_idx), committed(committed) {}
+    std::string key;
+    std::deque<boost::intrusive_ptr<PTR>>::iterator lru_it;
+    PTR(void *ptr, size_t size, int pool_idx, const std::string &key)
+        : ptr(ptr), size(size), pool_idx(pool_idx), key(key) {}
     ~PTR() {
         if (ptr) {
             DEBUG("deallocate ptr: {}, size: {}, pool_idx: {}", ptr, size, pool_idx);

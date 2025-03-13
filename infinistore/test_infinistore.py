@@ -375,11 +375,6 @@ def test_upload_cpu_download_gpu(server):
     dst_conn.close()
 
 
-def test_overwrite(server):
-    # FIXME: implement this test
-    pass
-
-
 def test_async_api(server):
     config = infinistore.ClientConfig(
         host_addr="127.0.0.1",
@@ -540,5 +535,37 @@ def test_simple_tcp_read_write(server):
         assert len(dst) == len(src)
         for i in range(len(src)):
             assert dst[i] == src[i]
+    finally:
+        conn.close()
+
+
+def test_overwrite_tcp(server):
+    config = infinistore.ClientConfig(
+        host_addr="127.0.0.1",
+        service_port=92345,
+        connection_type=infinistore.TYPE_TCP,
+    )
+
+    try:
+        conn = infinistore.InfinityConnection(config)
+        conn.connect()
+        key = generate_random_string(10)
+        size = 256 * 1024
+        src = bytearray(size)
+        for i in range(size):
+            src[i] = i % 200
+        conn.tcp_write_cache(key, get_ptr(src), len(src))
+        dst = conn.tcp_read_cache(key)
+        assert len(dst) == len(src)
+        for i in range(len(src)):
+            assert dst[i] == src[i]
+
+        # overwrite the key
+        src = bytearray(size)
+        for i in range(size):
+            src[i] = i % 100
+        conn.tcp_write_cache(key, get_ptr(src), len(src))
+        dst = conn.tcp_read_cache(key)
+        assert len(dst) == len(src)
     finally:
         conn.close()

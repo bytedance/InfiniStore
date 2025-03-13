@@ -12,7 +12,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <boost/lockfree/spsc_queue.hpp>
 #include <chrono>
 #include <deque>
 #include <future>
@@ -41,8 +40,7 @@ ibv_mtu active_mtu;
 // indicate if the MM extend is in flight
 bool extend_in_flight = false;
 
-std::unordered_map<uintptr_t, boost::intrusive_ptr<PTR>> inflight_rdma_writes;
-
+static std::deque<boost::intrusive_ptr<PTR>> lru_queue;
 std::unordered_map<std::string, boost::intrusive_ptr<PTR>> kv_map;
 
 typedef enum {
@@ -253,8 +251,8 @@ int Client::tcp_payload_request(const TCPPayloadRequest *req) {
         case OP_TCP_PUT: {
             int ret = mm->allocate(req->value_length(), 1,
                                    [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
-                                       current_tcp_task_ = boost::intrusive_ptr<PTR>(
-                                           new PTR(addr, req->value_length(), pool_idx, false));
+                                       current_tcp_task_ = boost::intrusive_ptr<PTR>(new PTR(
+                                           addr, req->value_length(), pool_idx, req->key()->str()));
                                    });
             if (ret < 0) {
                 ERROR("Failed to allocate memory");
@@ -274,9 +272,6 @@ int Client::tcp_payload_request(const TCPPayloadRequest *req) {
         case OP_TCP_GET: {
             auto it = kv_map.find(req->key()->str());
             if (it == kv_map.end()) {
-                return KEY_NOT_FOUND;
-            }
-            if (!it->second->committed) {
                 return KEY_NOT_FOUND;
             }
             auto ptr = it->second;
@@ -416,7 +411,7 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                         auto inflight_rdma_writes =
                             (std::vector<boost::intrusive_ptr<PTR>> *)wc.wr_id;
                         for (auto ptr : *inflight_rdma_writes) {
-                            ptr->committed = true;
+                            kv_map[std::move(ptr->key)] = ptr;
                         }
                         delete inflight_rdma_writes;
                         post_ack(FINISH);
@@ -571,9 +566,8 @@ int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
     bool allocated =
         mm->allocate(block_size, n, [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
             const auto *key = remote_meta_req->keys()->Get(key_idx);
-            auto ptr = boost::intrusive_ptr<PTR>(new PTR(addr, block_size, pool_idx, false));
+            auto ptr = boost::intrusive_ptr<PTR>(new PTR(addr, block_size, pool_idx, key->str()));
             inflight_rdma_writes->push_back(ptr);
-            kv_map[key->str()] = ptr;
             key_idx++;
         });
 
@@ -606,12 +600,6 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
             WARN("Key not found: {}", key->str());
             return KEY_NOT_FOUND;
         }
-
-        if (!it->second->committed) {
-            WARN("Key not committed: {}, return KEY_NOT_FOUND", key->str());
-            return KEY_NOT_FOUND;
-        }
-
         const auto &ptr = it->second;
 
         inflight_rdma_reads->push_back(ptr);
@@ -919,7 +907,7 @@ void Client::send_resp(int return_code, void *buf, size_t size) {
 int Client::check_key(const std::string &key_to_check) {
     int ret;
     // check if the key exists and committed
-    if (kv_map.count(key_to_check) > 0 && kv_map[key_to_check]->committed) {
+    if (kv_map.count(key_to_check) > 0) {
         ret = 0;
     }
     else {
@@ -1090,7 +1078,8 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
                 client->bytes_read_ += to_copy;
                 offset += to_copy;
                 if (client->bytes_read_ == client->expected_bytes_) {
-                    client->current_tcp_task_->committed = true;
+                    auto ptr = client->current_tcp_task_;
+                    kv_map[std::move(ptr->key)] = ptr;
                     client->current_tcp_task_.reset();
                     client->send_resp(FINISH, NULL, 0);
                     client->reset_client_read_state();
