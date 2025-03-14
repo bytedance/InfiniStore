@@ -65,6 +65,7 @@ class MM {
     void add_mempool(size_t pool_size, size_t block_size, struct ibv_pd* pd);
     bool allocate(size_t size, size_t n, AllocationCallback callback);
     void deallocate(void* ptr, size_t size, int pool_idx);
+    float usage();
     uint32_t get_lkey(int pool_idx) const {
         assert(pool_idx >= 0 && (size_t)pool_idx < mempools_.size());
         return mempools_[pool_idx]->get_lkey();

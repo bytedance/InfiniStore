@@ -40,7 +40,9 @@ ibv_mtu active_mtu;
 // indicate if the MM extend is in flight
 bool extend_in_flight = false;
 
-static std::deque<boost::intrusive_ptr<PTR>> lru_queue;
+// evict memory from head to tail, the PTR is shared by lru_queue and kv_map
+// so we have to pop from both to evict the memory
+std::list<boost::intrusive_ptr<PTR>> lru_queue;
 std::unordered_map<std::string, boost::intrusive_ptr<PTR>> kv_map;
 
 typedef enum {
@@ -51,6 +53,9 @@ typedef enum {
 
 // the max data could be send in uv_write
 static const size_t MAX_SEND_SIZE = 256 << 10;
+
+const float ON_DEMAND_MIN_THRESHOLD = 0.8;
+const float ON_DEMAND_MAX_THRESHOLD = 0.95;
 
 struct Client {
     uv_tcp_t *handle_ = NULL;    // uv_stream_t
@@ -244,17 +249,33 @@ void on_head_write(uv_write_t *req, int status) {
     free(req);
 }
 
+void evict_cache(float min_threshold, float max_threshold) {
+    if (mm->usage() >= max_threshold) {
+        // stop when mm->usage is below min_threshold
+        float usage = mm->usage();
+        while (mm->usage() >= min_threshold && !lru_queue.empty()) {
+            auto ptr = lru_queue.front();
+            lru_queue.pop_front();
+            kv_map.erase(ptr->key);
+        }
+        INFO("evict memory done, usage: from {:.2f} => {:.2f}", usage, mm->usage());
+    }
+}
+
 int Client::tcp_payload_request(const TCPPayloadRequest *req) {
     DEBUG("do tcp_payload_request... {}", op_name(req->op()));
 
     switch (req->op()) {
         case OP_TCP_PUT: {
-            int ret = mm->allocate(req->value_length(), 1,
-                                   [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
-                                       current_tcp_task_ = boost::intrusive_ptr<PTR>(new PTR(
-                                           addr, req->value_length(), pool_idx, req->key()->str()));
-                                   });
-            if (ret < 0) {
+            evict_cache(ON_DEMAND_MIN_THRESHOLD, ON_DEMAND_MAX_THRESHOLD);
+
+            bool allocated =
+                mm->allocate(req->value_length(), 1,
+                             [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
+                                 current_tcp_task_ = boost::intrusive_ptr<PTR>(new PTR(
+                                     addr, req->value_length(), pool_idx, req->key()->str()));
+                             });
+            if (!allocated) {
                 ERROR("Failed to allocate memory");
                 return OUT_OF_MEMORY;
             }
@@ -275,6 +296,11 @@ int Client::tcp_payload_request(const TCPPayloadRequest *req) {
                 return KEY_NOT_FOUND;
             }
             auto ptr = it->second;
+
+            // move ptr to the end of lru_queue
+            lru_queue.erase(ptr->lru_it);
+            lru_queue.push_back(ptr);
+            ptr->lru_it = --lru_queue.end();
 
             uint32_t *header_buf = (uint32_t *)malloc(sizeof(uint32_t) * 2);
             header_buf[0] = FINISH;
@@ -411,7 +437,9 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                         auto inflight_rdma_writes =
                             (std::vector<boost::intrusive_ptr<PTR>> *)wc.wr_id;
                         for (auto ptr : *inflight_rdma_writes) {
-                            kv_map[std::move(ptr->key)] = ptr;
+                            kv_map[ptr->key] = ptr;
+                            lru_queue.push_back(ptr);
+                            ptr->lru_it = --lru_queue.end();
                         }
                         delete inflight_rdma_writes;
                         post_ack(FINISH);
@@ -440,6 +468,15 @@ void add_mempool_completion(uv_work_t *req, int status) {
     extend_in_flight = false;
     mm->need_extend = false;
     delete req;
+}
+
+void extend_mempool() {
+    if (global_config.auto_increase && mm->need_extend && !extend_in_flight) {
+        INFO("Extend another mempool");
+        uv_work_t *req = new uv_work_t();
+        uv_queue_work(loop, req, add_mempool, add_mempool_completion);
+        extend_in_flight = true;
+    }
 }
 
 int Client::prepare_recv_rdma_request(int buf_idx) {
@@ -562,6 +599,7 @@ int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
     auto *inflight_rdma_writes = new std::vector<boost::intrusive_ptr<PTR>>;
     inflight_rdma_writes->reserve(n);
 
+    evict_cache(ON_DEMAND_MIN_THRESHOLD, ON_DEMAND_MAX_THRESHOLD);
     int key_idx = 0;
     bool allocated =
         mm->allocate(block_size, n, [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
@@ -603,6 +641,13 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         const auto &ptr = it->second;
 
         inflight_rdma_reads->push_back(ptr);
+    }
+
+    // loop over inflight_rdma_reads to update lru_queue
+    for (auto ptr : *inflight_rdma_reads) {
+        lru_queue.erase(ptr->lru_it);
+        lru_queue.push_back(ptr);
+        ptr->lru_it = --lru_queue.end();
     }
 
     // write to  remote address data from local address
@@ -954,7 +999,11 @@ int Client::get_match_last_index(const GetMatchLastIndexRequest *request) {
 int Client::delete_keys(const DeleteKeysRequest *request) {
     int count = 0;
     for (const auto *key : *request->keys()) {
-        if (kv_map.erase(key->str()) == 1) {
+        auto it = kv_map.find(key->str());
+        if (it != kv_map.end()) {
+            auto ptr = it->second;
+            kv_map.erase(it);
+            lru_queue.erase(ptr->lru_it);
             count++;
         }
     }
@@ -1079,7 +1128,12 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
                 offset += to_copy;
                 if (client->bytes_read_ == client->expected_bytes_) {
                     auto ptr = client->current_tcp_task_;
-                    kv_map[std::move(ptr->key)] = ptr;
+                    kv_map[ptr->key] = ptr;
+
+                    // put the ptr into lru queue
+                    lru_queue.push_back(ptr);
+                    ptr->lru_it = --lru_queue.end();
+
                     client->current_tcp_task_.reset();
                     client->send_resp(FINISH, NULL, 0);
                     client->reset_client_read_state();
@@ -1123,10 +1177,6 @@ int register_server(unsigned long loop_ptr, server_config_t config) {
     signal(SIGBUS, signal_handler);
     signal(SIGFPE, signal_handler);
     signal(SIGILL, signal_handler);
-
-    // verification
-    assert(config.num_stream > 0 &&
-           (config.num_stream == 1 || config.num_stream == 2 || config.num_stream == 4));
 
     global_config = config;
 

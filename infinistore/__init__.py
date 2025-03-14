@@ -12,6 +12,7 @@ from .lib import (
     get_kvmap_len,
     InfiniStoreException,
     InfiniStoreKeyNotFound,
+    evict_cache,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "get_kvmap_len",
     "InfiniStoreException",
     "InfiniStoreKeyNotFound",
+    "evict_cache",
 ]

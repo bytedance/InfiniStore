@@ -98,7 +98,6 @@ class ServerConfig(_infinistore.ServerConfig):
             link_type (str): The type of link. Defaults to "IB".
             prealloc_size (int): The preallocation size. Defaults to 16.
             minimal_allocate_size (int): The minimal allocation size. Defaults to 64.
-            num_stream (int): The number of streams. Defaults to 1.
             auto_increase (bool): indicate if infinistore will be automatically increased. 10GB each time. Default False.
         """
 
@@ -112,8 +111,10 @@ class ServerConfig(_infinistore.ServerConfig):
         self.link_type = kwargs.get("link_type", "IB")
         self.prealloc_size = kwargs.get("prealloc_size", 16)
         self.minimal_allocate_size = kwargs.get("minimal_allocate_size", 64)
-        self.num_stream = kwargs.get("num_stream", 1)
         self.auto_increase = kwargs.get("auto_increase", False)
+        self.evict_min_threshold = kwargs.get("evict_min_threshold", 0.1)
+        self.evict_max_threshold = kwargs.get("evict_max_threshold", 0.2)
+        self.evict_interval = kwargs.get("evict_interval", 5)
 
     def __repr__(self):
         return (
@@ -121,7 +122,8 @@ class ServerConfig(_infinistore.ServerConfig):
             f"log_level='{self.log_level}', "
             f"dev_name='{self.dev_name}', ib_port={self.ib_port}, link_type='{self.link_type}', "
             f"prealloc_size={self.prealloc_size}, minimal_allocate_size={self.minimal_allocate_size}, "
-            f"num_stream={self.num_stream}"
+            f"auto_increase={self.auto_increase}, evict_min_threshold={self.evict_min_threshold}, "
+            f"evict_max_threshold={self.evict_max_threshold}, evict_interval={self.evict_interval}"
         )
 
     def verify(self):
@@ -214,6 +216,26 @@ def register_server(loop, config: ServerConfig):
     # <uint64_t>PyCapsule_GetPointer(obj, NULL)
     if _infinistore.register_server(loop_ptr, config) < 0:
         raise Exception("Failed to register server")
+
+
+def evict_cache(min_threshold: float, max_threshold: float):
+    """
+    Evicts the cache in the infinistore.
+
+    This function calls the underlying _infinistore.evict_cache() method to
+    clear all entries in the cache, effectively resetting it.
+
+    Returns:
+        The result of the _infinistore.evict_cache() method call.
+    """
+    if min_threshold >= max_threshold:
+        raise Exception("min_threshold should be less than max_threshold")
+    if min_threshold > 1 or min_threshold < 0:
+        raise Exception("min_threshold should be in [0, 1]")
+    if max_threshold > 1 or max_threshold < 0:
+        raise Exception("max_threshold should be in [0, 1]")
+
+    return _infinistore.evict_cache(min_threshold, max_threshold)
 
 
 def _kernel_modules():

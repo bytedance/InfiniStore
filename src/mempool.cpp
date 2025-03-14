@@ -145,6 +145,7 @@ void MemoryPool::deallocate(void* ptr, size_t size) {
         }
     }
     last_search_position_ = 0;
+    allocated_blocks_ -= blocks_to_free;
 }
 
 void MM::add_mempool(struct ibv_pd* pd) {
@@ -153,6 +154,16 @@ void MM::add_mempool(struct ibv_pd* pd) {
 
 void MM::add_mempool(size_t pool_size, size_t block_size, struct ibv_pd* pd) {
     mempools_.push_back(new MemoryPool(pool_size, block_size, pd));
+}
+
+float MM::usage() {
+    size_t total_blocks = 0;
+    size_t allocated_blocks = 0;
+    for (auto pool : mempools_) {
+        total_blocks += pool->get_total_blocks();
+        allocated_blocks += pool->get_allocated_blocks();
+    }
+    return (float)allocated_blocks / total_blocks;
 }
 
 bool MM::allocate(size_t size, size_t n, AllocationCallback callback) {
@@ -173,10 +184,15 @@ bool MM::allocate(size_t size, size_t n, AllocationCallback callback) {
             "Mempool Count: {}, Pool idx: {}, Total blocks: {}, allocated blocks: {}, block usage: "
             "{}%",
             mempool_cnt, i, total_blocks, allocated_blocks, 100 * allocated_blocks / total_blocks);
+
         if (i == mempools_.size() - 1 &&
             (float)allocated_blocks / total_blocks > BLOCK_USAGE_RATIO) {
             need_extend = true;
         }
+        else {
+            need_extend = false;
+        }
+
         if (n == 0) {
             allocated = true;
             break;

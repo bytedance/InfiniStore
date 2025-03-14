@@ -5,6 +5,7 @@ from infinistore import (
     get_kvmap_len,
     ServerConfig,
     Logger,
+    evict_cache,
 )
 import asyncio
 import uvloop
@@ -112,11 +113,29 @@ def parse_args():
         type=int,
     )
     parser.add_argument(
-        "--num-stream",
+        "--evict-interval",
         required=False,
-        default=1,
-        help="(deprecated)number of streams, default 1, can only be 1, 2, 4",
-        type=int,
+        default=5,
+        help="evict interval, default 5s",
+    )
+    parser.add_argument(
+        "--evict-min-threshold",
+        required=False,
+        default=0.6,
+        help="evict min threshold, default 0.6",
+    )
+    parser.add_argument(
+        "--evict-max-threshold",
+        required=False,
+        default=0.8,
+        help="evict max threshold, default 0.8",
+    )
+    parser.add_argument(
+        "--enable-periodic-evict",
+        required=False,
+        action="store_true",
+        default=False,
+        help="enable evict cache, default False",
     )
 
     return parser.parse_args()
@@ -126,6 +145,12 @@ def prevent_oom():
     pid = os.getpid()
     with open(f"/proc/{pid}/oom_score_adj", "w") as f:
         f.write("-1000")
+
+
+async def periodic_evict(min_threshold=0.6, max_threshold=0.9, interval=5):
+    while True:
+        evict_cache(min_threshold, max_threshold)
+        await asyncio.sleep(interval)
 
 
 def main():
@@ -139,8 +164,10 @@ def main():
         ib_port=args.ib_port,
         link_type=args.link_type,
         minimal_allocate_size=args.minimal_allocate_size,
-        num_stream=args.num_stream,
         auto_increase=args.auto_increase,
+        evict_interval=args.evict_interval,
+        evict_min_threshold=args.evict_min_threshold,
+        evict_max_threshold=args.evict_max_threshold,
     )
     config.verify()
 
@@ -153,7 +180,10 @@ def main():
     # TODO: find the minimum size for pinning memory and ib_reg_mr
     register_server(loop, config)
 
+    if args.enable_periodic_evict:
+        loop.create_task(periodic_evict())
     prevent_oom()
+
     Logger.info("set oom_score_adj to -1000 to prevent OOM")
 
     http_config = uvicorn.Config(

@@ -2,7 +2,7 @@
 #define INFINISTORE_H
 #include <uv.h>
 
-#include <deque>
+#include <list>
 
 #include "config.h"
 #include "log.h"
@@ -33,7 +33,7 @@ class PTR : public IntrusivePtrTarget {
     size_t size;
     int pool_idx;
     std::string key;
-    std::deque<boost::intrusive_ptr<PTR>>::iterator lru_it;
+    std::list<boost::intrusive_ptr<PTR>>::iterator lru_it;
     PTR(void *ptr, size_t size, int pool_idx, const std::string &key)
         : ptr(ptr), size(size), pool_idx(pool_idx), key(key) {}
     ~PTR() {
@@ -48,6 +48,7 @@ extern std::unordered_map<uintptr_t, boost::intrusive_ptr<PTR>> inflight_rdma_wr
 
 // global function to bind with python
 int register_server(unsigned long loop_ptr, server_config_t config);
+void evict_cache(float min_threshold, float max_threshold);
 void purge_kv_map();
 
 #endif
