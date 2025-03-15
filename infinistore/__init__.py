@@ -13,6 +13,11 @@ from .lib import (
     InfiniStoreException,
     InfiniStoreKeyNotFound,
 )
+from .cluster_mgr import (
+    ConsulClusterMgr,
+    NoClusterMgr,
+)
+
 
 __all__ = [
     "InfinityConnection",
@@ -28,4 +33,6 @@ __all__ = [
     "get_kvmap_len",
     "InfiniStoreException",
     "InfiniStoreKeyNotFound",
+    "ConsulClusterMgr",
+    "NoClusterMgr",
 ]
