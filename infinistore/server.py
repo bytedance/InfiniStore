@@ -7,6 +7,7 @@ from infinistore import (
     check_supported,
     ServerConfig,
     Logger,
+    ConsulClusterMgr,
 )
 
 import asyncio
@@ -17,13 +18,15 @@ import torch
 import argparse
 import logging
 import os
+import json
+from fastapi.responses import JSONResponse, Response
 
 
 # disable standard logging, we will use our own logger
 logging.disable(logging.INFO)
 
 app = FastAPI()
-
+config: ServerConfig = None
 
 @app.post("/purge")
 async def purge():
@@ -94,6 +97,24 @@ async def selftest(number: int):
 async def kvmap_len():
     return {"len": get_kvmap_len()}
 
+@app.get("/health")
+async def health():
+    return 'Healthy', 200
+
+@app.get("/service_config")
+async def service_config() -> Response:
+    """
+    Query the configuration about how this service runs
+    """
+    service_conf = {
+        "manage_port": config.manage_port,
+        "service_port": config.service_port,
+        "connection_type": infinistore.TYPE_RDMA,
+        "ib_port": config.ib_port,
+        "link_type": config.link_type,
+        "dev_name": config.dev_name
+    }
+    return JSONResponse(status_code=200, content=json.dumps(service_conf))
 
 def check_p2p_access():
     num_devices = torch.cuda.device_count()
@@ -106,7 +127,6 @@ def check_p2p_access():
                     pass
                 else:
                     Logger.warn(f"Peer access NOT supported between device {i} and {j}")
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -188,6 +208,30 @@ def parse_args():
         help="(deprecated)number of streams, default 1, can only be 1, 2, 4",
         type=int,
     )
+    parser.add_argument(
+        "--cluster-mode",
+        required=False,
+        action='store_true',
+        help="Spedify whether the infinistore server is in a cluster",
+        dest='cluster_mode'
+    )
+    parser.add_argument(
+        "--bootstrap-ip",
+        required=False,
+        default="127.0.0.1:18080",
+        help="The bootstrap ip:port address to query for cluster information",
+        type=str,
+        dest="bootstrap_ip"
+    )
+    parser.add_argument(
+        "--service-id",
+        required=True,
+        default="infinistore-standalone",
+        help="The service ID which is used by consul cluster to identify the service instance",
+        type=str,
+        dest="service_id"
+    )
+
 
     return parser.parse_args()
 
@@ -199,6 +243,8 @@ def prevent_oom():
 
 
 def main():
+    global config
+
     args = parse_args()
     config = ServerConfig(
         manage_port=args.manage_port,
@@ -227,6 +273,23 @@ def main():
 
     prevent_oom()
     Logger.info("set oom_score_adj to -1000 to prevent OOM")
+
+    if args.cluster_mode:
+        # Initialized the cluster mgr with a bootstrap ip:port
+        health_url=f"http://{args.host}:{config.manage_port}/health"
+        cluster_mgr = ConsulClusterMgr(bootstrap_address=args.bootstrap_ip)
+        
+        # service_id and service_name are required by consul cluster to identify
+        # the uniquencess of service instance
+        cluster_mgr.register_service_node(service_host=args.host,
+                                            service_port=config.service_port,
+                                            service_id=args.service_id,
+                                            service_manage_port=config.manage_port,
+                                            check= {
+                                                'http': health_url,
+                                                'interval': '10s'
+                                            } 
+                                        )
 
     http_config = uvicorn.Config(
         app, host="0.0.0.0", port=config.manage_port, loop="uvloop"
