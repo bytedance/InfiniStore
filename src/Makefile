@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -O2 -g
+CXXFLAGS = -std=c++17 -Wall -O3 -g
 
 INCLUDES = -I/usr/local/
 LDFLAGS = -rdynamic

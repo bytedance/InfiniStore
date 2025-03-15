@@ -14,6 +14,7 @@
 // local TCP protocols
 #include "delete_keys_generated.h"
 #include "get_match_last_index_generated.h"
+#include "tcp_payload_request_generated.h"
 
 using namespace flatbuffers;
 
@@ -22,11 +23,11 @@ using namespace flatbuffers;
 
 // this is only used for recving RDMA_SEND or IMM data. this should be bigger than max layers of
 // model.
-#define MAX_RECV_WR 64
+#define MAX_RECV_WR 128
 
 // how many RDMA write requests can be outstanding, this should be bigger than MAX_WR_BATCH and less
 // than MAX_SEND_WR
-#define MAX_RDMA_WRITE_WR 4096
+#define MAX_RDMA_OPS_WR 8000
 
 // every MAX_WR_BATCH RDMA write requests will have a RDMA_SIGNAL
 #define MAX_WR_BATCH 32
@@ -35,13 +36,17 @@ using namespace flatbuffers;
 #define MAGIC_SIZE 4
 
 #define OP_RDMA_EXCHANGE 'E'
-#define OP_RDMA_ALLOCATE 'D'
 #define OP_RDMA_READ 'A'
-#define OP_RDMA_WRITE_COMMIT 'T'
+#define OP_RDMA_WRITE 'W'
 #define OP_CHECK_EXIST 'C'
 #define OP_GET_MATCH_LAST_IDX 'M'
 #define OP_DELETE_KEYS 'X'
 #define OP_SIZE 1
+
+#define OP_TCP_PUT 'P'
+#define OP_TCP_GET 'G'
+#define OP_TCP_PAYLOAD 'L'
+
 // please add op name in protocol.cpp
 
 std::string op_name(char op);
@@ -66,18 +71,6 @@ typedef struct __attribute__((packed)) {
     unsigned int body_size;
 } header_t;
 
-// remote_block_t is used to to talk to PYTHON layer. not used in RDMA/TCP layer.
-typedef struct {
-    uint32_t rkey;
-    uintptr_t remote_addr;
-} remote_block_t;
-
-// block_t is used to to talk to PYTHON layer. not used in RDMA/TCP layer.
-typedef struct {
-    std::string key;
-    unsigned long offset;
-} block_t;
-
 typedef struct __attribute__((packed)) rdma_conn_info_t {
     uint32_t qpn;
     uint32_t psn;
@@ -100,8 +93,5 @@ class FixedBufferAllocator : public Allocator {
     size_t size_;
     size_t offset_;
 };
-
-const RemoteBlock FAKE_REMOTE_BLOCK = RemoteBlock(0, 0);
-bool is_fake_remote_block(remote_block_t& block);
 
 #endif

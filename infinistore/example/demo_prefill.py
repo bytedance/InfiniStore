@@ -1,7 +1,5 @@
 from infinistore import (
     ClientConfig,
-    check_supported,
-    DisableTorchCaching,
     InfinityConnection,
 )
 import infinistore
@@ -41,11 +39,9 @@ class TransformerLayer(nn.Module):
 
 
 def run(conn):
-    check_supported()
-    with DisableTorchCaching():
-        model = nn.Sequential(
-            *[TransformerLayer(N, num_heads) for _ in range(num_layers)]
-        ).cuda()
+    model = nn.Sequential(
+        *[TransformerLayer(N, num_heads) for _ in range(num_layers)]
+    ).cuda()
 
     input = torch.randn(seq_length, 1, N, device="cuda:0", dtype=torch.float16)
 
