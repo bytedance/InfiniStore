@@ -112,8 +112,8 @@ class ServerConfig(_infinistore.ServerConfig):
         self.prealloc_size = kwargs.get("prealloc_size", 16)
         self.minimal_allocate_size = kwargs.get("minimal_allocate_size", 64)
         self.auto_increase = kwargs.get("auto_increase", False)
-        self.evict_min_threshold = kwargs.get("evict_min_threshold", 0.1)
-        self.evict_max_threshold = kwargs.get("evict_max_threshold", 0.2)
+        self.evict_min_threshold = kwargs.get("evict_min_threshold", 0.6)
+        self.evict_max_threshold = kwargs.get("evict_max_threshold", 0.8)
         self.evict_interval = kwargs.get("evict_interval", 5)
 
     def __repr__(self):
@@ -231,9 +231,9 @@ def evict_cache(min_threshold: float, max_threshold: float):
     if min_threshold >= max_threshold:
         raise Exception("min_threshold should be less than max_threshold")
     if min_threshold > 1 or min_threshold < 0:
-        raise Exception("min_threshold should be in [0, 1]")
+        raise Exception("min_threshold should be in (0, 1)")
     if max_threshold > 1 or max_threshold < 0:
-        raise Exception("max_threshold should be in [0, 1]")
+        raise Exception("max_threshold should be in (0, 1)")
 
     return _infinistore.evict_cache(min_threshold, max_threshold)
 

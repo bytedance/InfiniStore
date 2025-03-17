@@ -156,16 +156,6 @@ void MM::add_mempool(size_t pool_size, size_t block_size, struct ibv_pd* pd) {
     mempools_.push_back(new MemoryPool(pool_size, block_size, pd));
 }
 
-float MM::usage() {
-    size_t total_blocks = 0;
-    size_t allocated_blocks = 0;
-    for (auto pool : mempools_) {
-        total_blocks += pool->get_total_blocks();
-        allocated_blocks += pool->get_allocated_blocks();
-    }
-    return (float)allocated_blocks / total_blocks;
-}
-
 bool MM::allocate(size_t size, size_t n, AllocationCallback callback) {
     bool allocated = false;
     size_t mempool_cnt = mempools_.size();

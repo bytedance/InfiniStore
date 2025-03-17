@@ -233,8 +233,8 @@ void on_head_write(uv_write_t *req, int status) {
         ERROR("Write error {}", uv_strerror(status));
         free(ctx->header_buf);
         delete ctx;
-        free(req);
         uv_close((uv_handle_t *)req->handle, on_close);
+        free(req);
         return;
     }
 

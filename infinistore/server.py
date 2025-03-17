@@ -147,7 +147,7 @@ def prevent_oom():
         f.write("-1000")
 
 
-async def periodic_evict(min_threshold=0.6, max_threshold=0.9, interval=5):
+async def periodic_evict(min_threshold: float, max_threshold: float, interval: int):
     while True:
         evict_cache(min_threshold, max_threshold)
         await asyncio.sleep(interval)
@@ -181,7 +181,13 @@ def main():
     register_server(loop, config)
 
     if args.enable_periodic_evict:
-        loop.create_task(periodic_evict())
+        loop.create_task(
+            periodic_evict(
+                config.evict_min_threshold,
+                config.evict_max_threshold,
+                config.evict_interval,
+            )
+        )
     prevent_oom()
 
     Logger.info("set oom_score_adj to -1000 to prevent OOM")
