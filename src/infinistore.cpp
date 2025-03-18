@@ -438,6 +438,7 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                             (std::vector<boost::intrusive_ptr<PTR>> *)wc.wr_id;
                         for (auto ptr : *inflight_rdma_writes) {
                             kv_map[ptr->key] = ptr;
+                            DEBUG("writing key done, {}", ptr->key);
                             lru_queue.push_back(ptr);
                             ptr->lru_it = --lru_queue.end();
                         }
@@ -605,6 +606,7 @@ int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         mm->allocate(block_size, n, [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
             const auto *key = remote_meta_req->keys()->Get(key_idx);
             auto ptr = boost::intrusive_ptr<PTR>(new PTR(addr, block_size, pool_idx, key->str()));
+            DEBUG("writing key: {}", key->str());
             inflight_rdma_writes->push_back(ptr);
             key_idx++;
         });
