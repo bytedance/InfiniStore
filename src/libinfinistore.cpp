@@ -327,7 +327,8 @@ void Connection::cq_handler() {
                                 DEBUG("RDMA write cache done: Received IMM, imm_data: {}",
                                       wc[i].imm_data);
                                 auto *info = reinterpret_cast<rdma_write_info *>(ptr);
-                                info->callback(wc->imm_data);
+                                info->callback(wc[i].imm_data);
+                                DEBUG("RDMA_WRITE_ACK callback done");
                                 delete info;
                                 break;
                             }
