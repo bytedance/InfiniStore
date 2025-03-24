@@ -5,30 +5,37 @@ RUN yum -y install rdma-core-devel libuv-devel
 RUN dnf clean all
 RUN dnf makecache
 
-# build spdlog
+# build spdlog v1.15.1
 WORKDIR /tmp
-RUN git clone --branch v1.15.1 --recurse-submodules https://github.com/gabime/spdlog.git
+RUN git clone --recurse-submodules https://github.com/gabime/spdlog.git && \
+    cd spdlog && \
+    git checkout f355b3d && \
+    git submodule update --recursive
 WORKDIR /tmp/spdlog
 RUN cmake -G "Unix Makefiles" && \
-    make && \
+    make -j8 && \
     make install
 RUN rm -rf /tmp/spdlog
 
-# build fmt
+# build fmt 11.1.3
 WORKDIR /tmp
-RUN git clone --branch 11.1.3 https://github.com/fmtlib/fmt.git
+RUN git clone https://github.com/fmtlib/fmt.git && \
+    cd fmt && \
+    git checkout 9cf9f38
 WORKDIR /tmp/fmt
 RUN cmake -G "Unix Makefiles" && \
-    make && \
+    make -j8 && \
     make install
 RUN rm -rf /tmp/fmt
 
-# build flatbuffer
+# build flatbuffer v25.2.10
 WORKDIR /tmp
-RUN git clone --branch v25.2.10 https://github.com/google/flatbuffers.git
+RUN git clone https://github.com/google/flatbuffers.git && \
+    cd flatbuffers && \
+    git checkout 1c51462
 WORKDIR /tmp/flatbuffers
 RUN cmake -G "Unix Makefiles" && \
-    make && \
+    make -j8 && \
     make install
 
 ENV PATH=/usr/local/flatbuffers/bin:$PATH
