@@ -32,7 +32,7 @@ RUN rm -rf /tmp/fmt
 WORKDIR /tmp
 RUN git clone https://github.com/google/flatbuffers.git && \
     cd flatbuffers && \
-    git checkout 1c51462
+    git checkout 33e2d80
 WORKDIR /tmp/flatbuffers
 RUN cmake -G "Unix Makefiles" && \
     make -j8 && \
