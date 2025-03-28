@@ -449,7 +449,7 @@ int Connection::modify_qp_to_rtr() {
 
     attr.dest_qp_num = remote_info_.qpn;
     attr.rq_psn = remote_info_.psn;
-    attr.max_dest_rd_atomic = 4;
+    attr.max_dest_rd_atomic = 16;
     attr.min_rnr_timer = 12;
     attr.ah_attr.dlid = 0;
     attr.ah_attr.sl = 0;
@@ -487,7 +487,7 @@ int Connection::modify_qp_to_rts() {
     attr.retry_cnt = 7;
     attr.rnr_retry = 7;
     attr.sq_psn = local_info_.psn;  // Use 0 or match with local PSN
-    attr.max_rd_atomic = 1;
+    attr.max_rd_atomic = 16;
 
     int flags = IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
                 IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC;
