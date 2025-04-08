@@ -95,6 +95,7 @@ class ServerConfig(_infinistore.ServerConfig):
         ServerConfig is a configuration class for the server settings.
 
         Attributes:
+            host (str): The IP address of the server
             manage_port (int): The port used for management. Defaults to 0.
             service_port (int): The port used for service. Defaults to 0.
             log_level (str): The logging level. Defaults to "warning".
@@ -108,6 +109,7 @@ class ServerConfig(_infinistore.ServerConfig):
 
     def __init__(self, **kwargs):
         super().__init__()
+        self.host = kwargs.get("host", "127.0.0.1")
         self.manage_port = kwargs.get("manage_port", 0)
         self.service_port = kwargs.get("service_port", 0)
         self.log_level = kwargs.get("log_level", "warning")

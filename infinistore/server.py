@@ -6,6 +6,7 @@ from infinistore import (
     ServerConfig,
     Logger,
     evict_cache,
+    ConsulClusterMgr,
 )
 import asyncio
 import uvloop
@@ -14,12 +15,14 @@ import uvicorn
 import argparse
 import logging
 import os
-
+import json
+from fastapi.responses import JSONResponse, Response
 
 # disable standard logging, we will use our own logger
 logging.disable(logging.INFO)
 
 app = FastAPI()
+config: ServerConfig = None
 
 
 @app.post("/purge")
@@ -39,7 +42,37 @@ async def kvmap_len():
     return {"len": get_kvmap_len()}
 
 
-def parse_args():
+@app.get("/health")
+async def health():
+    Logger.info(f"Health check received at {config.host}:{config.manage_port}...")
+    return "Healthy", 200
+
+
+@app.get("/service/config")
+async def service_config() -> Response:
+    """
+    Query the configuration about how to connect to this server node
+
+    Response:
+    {
+        "connection_type": "TYPE_RDMA",
+        "ib_port": "1",
+        "link_type": "LINK_ETHERNET",
+        "dev_name": "mlx5_0"
+    }
+    """
+    service_conf = {
+        "manage_port": config.manage_port,
+        "service_port": config.service_port,
+        "connection_type": infinistore.TYPE_RDMA,
+        "ib_port": config.ib_port,
+        "link_type": config.link_type,
+        "dev_name": config.dev_name,
+    }
+    return JSONResponse(status_code=200, content=json.dumps(service_conf))
+
+
+def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--auto-increase",
@@ -137,8 +170,31 @@ def parse_args():
         default=False,
         help="enable evict cache, default False",
     )
+    parser.add_argument(
+        "--cluster-mode",
+        required=False,
+        action="store_true",
+        help="Specify whether the infinistore server is in a cluster",
+        dest="cluster_mode",
+    )
+    parser.add_argument(
+        "--bootstrap-ip",
+        required=False,
+        default="127.0.0.1:18080",
+        help="The bootstrap ip:port address to query for cluster information",
+        type=str,
+        dest="bootstrap_ip",
+    )
+    parser.add_argument(
+        "--service-id",
+        required=True,
+        default="infinistore-standalone",
+        help="The service ID which is used by consul cluster to identify the service instance",
+        type=str,
+        dest="service_id",
+    )
 
-    return parser.parse_args()
+    return parser
 
 
 def prevent_oom():
@@ -154,8 +210,12 @@ async def periodic_evict(min_threshold: float, max_threshold: float, interval: i
 
 
 def main():
-    args = parse_args()
+    global config
+
+    parser = get_parser()
+    args = parser.parse_args()
     config = ServerConfig(
+        host=args.host,
         manage_port=args.manage_port,
         service_port=args.service_port,
         log_level=args.log_level,
@@ -195,6 +255,21 @@ def main():
     http_config = uvicorn.Config(
         app, host="0.0.0.0", port=config.manage_port, loop="uvloop"
     )
+
+    if args.cluster_mode:
+        # Initialized the cluster mgr with a bootstrap ip:port
+        health_url = f"http://{args.host}:{config.manage_port}/health"
+        cluster_mgr = ConsulClusterMgr(bootstrap_address=args.bootstrap_ip)
+
+        # Note: service_id is required by consul cluster to uniquely identify a service instance
+        cluster_mgr.register_service_node(
+            service_host=args.host,
+            service_port=config.service_port,
+            service_id=args.service_id,
+            service_manage_port=config.manage_port,
+            check={"http": health_url, "interval": "5s"},
+        )
+        loop.create_task(cluster_mgr.refresh_task())
 
     server = uvicorn.Server(http_config)
 
