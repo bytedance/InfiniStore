@@ -68,14 +68,14 @@ def parse_args():
         "--src-gpu",
         required=False,
         type=int,
-        default=0,
+        default=-1,
         help="gpu# for data write from, default 0",
     )
     parser.add_argument(
         "--dst-gpu",
         required=False,
         type=int,
-        default=1,
+        default=-1,
         help="gpu# for data read to, default 1",
     )
     parser.add_argument(
@@ -143,8 +143,8 @@ def run(args):
 
         # rdma support GPUDirect RDMA, so we can use cuda tensor
         if args.rdma:
-            src_device = "cuda:" + str(args.src_gpu)
-            dst_device = "cuda:" + str(args.dst_gpu)
+            src_device = "cpu" if args.src_gpu == -1 else "cuda:" + str(args.src_gpu)
+            dst_device = "cpu" if args.dst_gpu == -1 else "cuda:" + str(args.dst_gpu)
         else:
             src_device = "cpu"
             dst_device = "cpu"
@@ -161,8 +161,10 @@ def run(args):
         )
 
         if args.rdma:
-            torch.cuda.synchronize(src_tensor.device)
-            torch.cuda.synchronize(dst_tensor.device)
+            if src_device != "cpu":
+                torch.cuda.synchronize(src_tensor.device)
+            if dst_device != "cpu":
+                torch.cuda.synchronize(dst_tensor.device)
             conn.register_mr(
                 src_tensor.data_ptr(), src_tensor.numel() * src_tensor.element_size()
             )
@@ -253,6 +255,7 @@ def run(args):
             end = time.time()
             read_sum += end - mid
 
+        print("src_device: {}, dst_device: {}".format(src_device, dst_device))
         print(
             "size: {} MB, block size: {} KB, connection type: {}".format(
                 args.size * args.iteration, args.block_size, config.connection_type

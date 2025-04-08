@@ -523,7 +523,7 @@ void Client::perform_batch_rdma(const RemoteMetaRequest *remote_meta_req,
     int n = remote_meta_req->keys()->size();
     for (int i = 0; i < n; i++) {
         sges[num_wr].addr = (uintptr_t)(*inflight_rdma_ops)[i]->ptr;
-        sges[num_wr].length = remote_meta_req->block_size();
+        sges[num_wr].length = (*inflight_rdma_ops)[i]->size;
         sges[num_wr].lkey = mm->get_lkey((*inflight_rdma_ops)[i]->pool_idx);
 
         wrs[num_wr].wr_id = 0;
@@ -586,6 +586,7 @@ void Client::perform_batch_rdma(const RemoteMetaRequest *remote_meta_req,
 
 int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
     DEBUG("do rdma write... num of keys: {}", remote_meta_req->keys()->size());
+
     if (remote_meta_req->keys()->size() != remote_meta_req->remote_addrs()->size()) {
         ERROR("keys size and remote_addrs size mismatch");
         return INVALID_REQ;
@@ -601,6 +602,7 @@ int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
     inflight_rdma_writes->reserve(n);
 
     evict_cache(ON_DEMAND_MIN_THRESHOLD, ON_DEMAND_MAX_THRESHOLD);
+
     int key_idx = 0;
     bool allocated =
         mm->allocate(block_size, n, [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
@@ -616,9 +618,11 @@ int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         delete inflight_rdma_writes;
         return OUT_OF_MEMORY;
     }
+
     // perform rdma read to receive data from client
     // read remote address data to local address
     perform_batch_rdma(remote_meta_req, inflight_rdma_writes, IBV_WR_RDMA_READ);
+
     return 0;
 }
 
@@ -642,6 +646,12 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         }
         const auto &ptr = it->second;
 
+        if (ptr->size > remote_meta_req->block_size()) {
+            WARN("remote region does not enough size: key:{}, actual size: {}, remote size :{}",
+                 key->str(), ptr->size, remote_meta_req->block_size());
+            return INVALID_REQ;
+        }
+
         inflight_rdma_reads->push_back(ptr);
     }
 
@@ -654,6 +664,7 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
 
     // write to  remote address data from local address
     perform_batch_rdma(remote_meta_req, inflight_rdma_reads, IBV_WR_RDMA_WRITE);
+
     return 0;
 }
 
@@ -838,7 +849,7 @@ int Client::rdma_exchange() {
     attr.path_mtu = (enum ibv_mtu)std::min((uint32_t)active_mtu, (uint32_t)remote_info_.mtu);
     attr.dest_qp_num = remote_info_.qpn;
     attr.rq_psn = remote_info_.psn;
-    attr.max_dest_rd_atomic = 4;
+    attr.max_dest_rd_atomic = 16;
     attr.min_rnr_timer = 12;
     attr.ah_attr.dlid = 0;  // RoCE v2 is used.
     attr.ah_attr.sl = 0;
@@ -874,7 +885,7 @@ int Client::rdma_exchange() {
     attr.retry_cnt = 7;
     attr.rnr_retry = 7;
     attr.sq_psn = local_info_.psn;
-    attr.max_rd_atomic = 1;
+    attr.max_rd_atomic = 16;
 
     flags = IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN |
             IBV_QP_MAX_QP_RD_ATOMIC;
