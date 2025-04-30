@@ -67,7 +67,7 @@ class ClientConfig(_infinistore.ClientConfig):
         return (
             f"ServerConfig(service_port={self.service_port}, "
             f"log_level='{self.log_level}', host_addr='{self.host_addr}', "
-            f"connection_type='{self.connection_type.name}')"
+            f"connection_type='{self.connection_type}')"
             f"dev_name='{self.dev_name}', ib_port={self.ib_port}, link_type='{self.link_type}'"
         )
 
