@@ -13,9 +13,9 @@
 #include <vector>
 
 #include "config.h"
-#include "ibv_helper.h"
 #include "log.h"
 #include "protocol.h"
+#include "rdma.h"
 #include "utils.h"
 
 SendBuffer::SendBuffer(struct ibv_pd *pd, size_t size) {
@@ -49,7 +49,7 @@ void Connection::close_conn() {
         stop_ = true;
 
         // create fake wr to wake up cq thread
-        ibv_req_notify_cq(cq_, 0);
+        ibv_req_notify_cq(ctx_.cq, 0);
         struct ibv_sge sge;
         memset(&sge, 0, sizeof(sge));
         sge.addr = (uintptr_t)this;
@@ -66,7 +66,7 @@ void Connection::close_conn() {
 
         struct ibv_send_wr *bad_send_wr;
 
-        ibv_post_send(qp_, &send_wr, &bad_send_wr);
+        ibv_post_send(ctx_.qp, &send_wr, &bad_send_wr);
 
         // wait thread done
         cq_future_.get();
@@ -96,194 +96,17 @@ Connection::~Connection() {
     }
     local_mr_.clear();
 
-    // if (recv_mr_) {
-    //     ibv_dereg_mr(recv_mr_);
-    // }
-
-    // if (recv_buffer_) {
-    //     free(recv_buffer_);
-    // }
-
-    if (qp_) {
-        struct ibv_qp_attr attr;
-        memset(&attr, 0, sizeof(attr));
-        attr.qp_state = IBV_QPS_RESET;
-        ibv_modify_qp(qp_, &attr, IBV_QP_STATE);
-    }
-    if (qp_) {
-        ibv_destroy_qp(qp_);
-    }
-    if (cq_) {
-        ibv_destroy_cq(cq_);
-    }
-
-    if (comp_channel_) {
-        ibv_destroy_comp_channel(comp_channel_);
-    }
-    if (pd_) {
-        ibv_dealloc_pd(pd_);
-    }
-    if (ib_ctx_) {
-        ibv_close_device(ib_ctx_);
-    }
-}
-
-int Connection::init_rdma_resources(client_config_t config) {
-    // Get list of RDMA devices
-    struct ibv_device **dev_list;
-    struct ibv_device *ib_dev;
-    int num_devices;
-
-    dev_list = ibv_get_device_list(&num_devices);
-    if (!dev_list) {
-        ERROR("Failed to get RDMA devices list");
-        return -1;
-    }
-
-    for (int i = 0; i < num_devices; ++i) {
-        char *dev_name_from_list = (char *)ibv_get_device_name(dev_list[i]);
-        if (strcmp(dev_name_from_list, config.dev_name.c_str()) == 0) {
-            INFO("found device {}", dev_name_from_list);
-            ib_dev = dev_list[i];
-            ib_ctx_ = ibv_open_device(ib_dev);
-            break;
-        }
-    }
-
-    if (!ib_ctx_) {
-        INFO(
-            "Can't find or failed to open the specified device, try to open "
-            "the default device {}",
-            (char *)ibv_get_device_name(dev_list[0]));
-        ib_ctx_ = ibv_open_device(dev_list[0]);
-        if (!ib_ctx_) {
-            ERROR("Failed to open the default device");
-            return -1;
-        }
-    }
-    ibv_free_device_list(dev_list);
-
-    struct ibv_port_attr port_attr;
-    ib_port_ = config.ib_port;
-    if (ibv_query_port(ib_ctx_, ib_port_, &port_attr)) {
-        ERROR("Unable to query port {} attributes\n", ib_port_);
-        return -1;
-    }
-
-    int gidx = 0;
-    if ((port_attr.link_layer == IBV_LINK_LAYER_INFINIBAND && config.link_type == "Ethernet") ||
-        (port_attr.link_layer == IBV_LINK_LAYER_ETHERNET && config.link_type == "IB")) {
-        ERROR("port link layer and config link type don't match");
-        return -1;
-    }
-    if (port_attr.link_layer == IBV_LINK_LAYER_INFINIBAND) {
-        gidx = -1;
-    }
-    else {
-        gidx = ibv_find_sgid_type(ib_ctx_, ib_port_, IBV_GID_TYPE_ROCE_V2, AF_INET);
-        if (gidx < 0) {
-            ERROR("Failed to find GID");
-            return -1;
-        }
-    }
-
-    lid_ = port_attr.lid;
-    gidx_ = gidx;
-
-    active_mtu_ = port_attr.active_mtu;
-
-    union ibv_gid gid;
-    // get gid
-    if (gidx_ != -1 && ibv_query_gid(ib_ctx_, 1, gidx_, &gid)) {
-        ERROR("Failed to get GID");
-        return -1;
-    }
-
-    // Allocate Protection Domain
-    pd_ = ibv_alloc_pd(ib_ctx_);
-    if (!pd_) {
-        ERROR("Failed to allocate PD");
-        return -1;
-    }
-
-    comp_channel_ = ibv_create_comp_channel(ib_ctx_);
-    if (!comp_channel_) {
-        ERROR("Failed to create completion channel");
-        return -1;
-    }
-
-    // Create Completion Queue
-    cq_ = ibv_create_cq(ib_ctx_, MAX_SEND_WR + MAX_RECV_WR, NULL, comp_channel_, 0);
-    if (!cq_) {
-        ERROR("Failed to create CQ");
-        return -1;
-    }
-
-    if (ibv_req_notify_cq(cq_, 0)) {
-        ERROR("Failed to request CQ notification");
-        return -1;
-    }
-
-    // Create Queue Pair
-    struct ibv_qp_init_attr qp_init_attr = {};
-    qp_init_attr.send_cq = cq_;
-    qp_init_attr.recv_cq = cq_;
-    qp_init_attr.qp_type = IBV_QPT_RC;  // Reliable Connection
-    qp_init_attr.cap.max_send_wr = MAX_SEND_WR;
-    qp_init_attr.cap.max_recv_wr = MAX_RECV_WR;
-    qp_init_attr.cap.max_send_sge = 1;
-    qp_init_attr.cap.max_recv_sge = 1;
-
-    qp_ = ibv_create_qp(pd_, &qp_init_attr);
-    if (!qp_) {
-        ERROR("Failed to create QP, {}", strerror(errno));
-        return -1;
-    }
-
-    // Modify QP to INIT state
-    if (modify_qp_to_init()) {
-        ERROR("Failed to modify QP to INIT, {}", strerror(errno));
-        return -1;
-    }
-
-    local_info_.qpn = qp_->qp_num;
-    local_info_.psn = lrand48() & 0xffffff;
-    if (gidx != -1) {
-        local_info_.gid = gid;
-        DEBUG("gid index: {}", gidx);
-    }
-    local_info_.lid = lid_;
-
-    local_info_.mtu = (uint32_t)active_mtu_;
-
-    print_rdma_conn_info(&local_info_, false);
-    return 0;
-}
-
-int Connection::modify_qp_to_init() {
-    struct ibv_qp_attr attr = {};
-    attr.qp_state = IBV_QPS_INIT;
-    attr.port_num = ib_port_;
-    attr.pkey_index = 0;
-    attr.qp_access_flags =
-        IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_LOCAL_WRITE;
-
-    int flags = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
-
-    int ret = ibv_modify_qp(qp_, &attr, flags);
-    if (ret) {
-        ERROR("Failed to modify QP to INIT");
-        return ret;
-    }
-    return 0;
+    destroy_rdma_context(&ctx_);
+    close_rdma_device(&rdma_dev_);
 }
 
 void Connection::cq_handler() {
-    assert(comp_channel_ != NULL);
+    assert(ctx_.comp_channel != NULL);
+
     while (!stop_) {
         struct ibv_cq *ev_cq;
         void *ev_ctx;
-        int ret = ibv_get_cq_event(comp_channel_, &ev_cq, &ev_ctx);
+        int ret = ibv_get_cq_event(ctx_.comp_channel, &ev_cq, &ev_ctx);
         if (ret == 0) {
             ibv_ack_cq_events(ev_cq, 1);
             if (ibv_req_notify_cq(ev_cq, 0)) {
@@ -293,7 +116,7 @@ void Connection::cq_handler() {
 
             struct ibv_wc wc[10] = {};
             int num_completions;
-            while ((num_completions = ibv_poll_cq(cq_, 10, wc)) && num_completions > 0) {
+            while ((num_completions = ibv_poll_cq(ctx_.cq, 10, wc)) && num_completions > 0) {
                 for (int i = 0; i < num_completions; i++) {
                     if (wc[i].status != IBV_WC_SUCCESS) {
                         // only fake wr will use IBV_WC_SEND
@@ -369,8 +192,19 @@ SendBuffer *Connection::get_send_buffer() {
 void Connection::release_send_buffer(SendBuffer *buffer) { send_buffers_.push(buffer); }
 
 int Connection::setup_rdma(client_config_t config) {
-    if (init_rdma_resources(config) < 0) {
-        ERROR("Failed to initialize RDMA resources");
+    // if (init_rdma_resources(config) < 0) {
+    //     ERROR("Failed to initialize RDMA resources");
+    //     return -1;
+    // }
+
+    if (open_rdma_device(config.dev_name, config.ib_port, config.link_type, config.hint_gid_index,
+                         &rdma_dev_) < 0) {
+        ERROR("Failed to open RDMA device");
+        return -1;
+    }
+
+    if (init_rdma_context(&ctx_, &rdma_dev_) < 0) {
+        ERROR("Failed to initialize RDMA context");
         return -1;
     }
 
@@ -380,14 +214,15 @@ int Connection::setup_rdma(client_config_t config) {
     }
 
     print_rdma_conn_info(&remote_info_, true);
+    print_rdma_conn_info(&local_info_, false);
 
     // Modify QP to RTR state
-    if (modify_qp_to_rtr()) {
+    if (modify_qp_to_rtr(&ctx_, &rdma_dev_, &remote_info_)) {
         ERROR("Failed to modify QP to RTR");
         return -1;
     }
 
-    if (modify_qp_to_rts()) {
+    if (modify_qp_to_rts(&ctx_)) {
         ERROR("Failed to modify QP to RTS");
         return -1;
     }
@@ -397,7 +232,7 @@ int Connection::setup_rdma(client_config_t config) {
     because server also has the same number of buffers
     */
     for (int i = 0; i < MAX_RECV_WR; i++) {
-        send_buffers_.push(new SendBuffer(pd_, PROTOCOL_BUFFER_SIZE));
+        send_buffers_.push(new SendBuffer(rdma_dev_.pd, PROTOCOL_BUFFER_SIZE));
     }
 
     stop_ = false;
@@ -425,77 +260,14 @@ int Connection::init_connection(client_config_t config) {
 
     // always connect to localhost
     if (inet_pton(AF_INET, config.host_addr.data(), &serv_addr.sin_addr) <= 0) {
-        ERROR("Invalid address/ Address not supported");
+        ERROR("Invalid address/ Address not supported {}", config.host_addr);
         return -1;
     }
 
+    INFO("Connecting to {}:{}", config.host_addr, config.service_port);
     if (connect(sock_, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         ERROR("Failed to connect to server");
         return -1;
-    }
-    return 0;
-}
-
-int Connection::modify_qp_to_rtr() {
-    struct ibv_qp_attr attr = {};
-    attr.qp_state = IBV_QPS_RTR;
-
-    // update MTU
-    if (remote_info_.mtu != active_mtu_) {
-        WARN("remote MTU: {}, local MTU: {} is not the same, update to minimal MTU",
-             1 << ((uint32_t)remote_info_.mtu + 7), 1 << ((uint32_t)active_mtu_ + 7));
-    }
-    attr.path_mtu = (enum ibv_mtu)std::min((uint32_t)active_mtu_, (uint32_t)remote_info_.mtu);
-
-    attr.dest_qp_num = remote_info_.qpn;
-    attr.rq_psn = remote_info_.psn;
-    attr.max_dest_rd_atomic = 16;
-    attr.min_rnr_timer = 12;
-    attr.ah_attr.dlid = 0;
-    attr.ah_attr.sl = 0;
-    attr.ah_attr.src_path_bits = 0;
-    attr.ah_attr.port_num = ib_port_;
-
-    if (gidx_ == -1) {
-        // IB
-        attr.ah_attr.dlid = remote_info_.lid;
-        attr.ah_attr.is_global = 0;
-    }
-    else {
-        // RoCE v2
-        attr.ah_attr.is_global = 1;
-        attr.ah_attr.grh.dgid = remote_info_.gid;
-        attr.ah_attr.grh.sgid_index = gidx_;  // local gid
-        attr.ah_attr.grh.hop_limit = 1;
-    }
-
-    int flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
-                IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
-
-    int ret = ibv_modify_qp(qp_, &attr, flags);
-    if (ret) {
-        ERROR("Failed to modify QP to RTR");
-        return ret;
-    }
-    return 0;
-}
-
-int Connection::modify_qp_to_rts() {
-    struct ibv_qp_attr attr = {};
-    attr.qp_state = IBV_QPS_RTS;
-    attr.timeout = 14;
-    attr.retry_cnt = 7;
-    attr.rnr_retry = 7;
-    attr.sq_psn = local_info_.psn;  // Use 0 or match with local PSN
-    attr.max_rd_atomic = 16;
-
-    int flags = IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
-                IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC;
-
-    int ret = ibv_modify_qp(qp_, &attr, flags);
-    if (ret) {
-        ERROR("Failed to modify QP to RTS");
-        return ret;
     }
     return 0;
 }
@@ -509,6 +281,8 @@ int Connection::exchange_conn_info() {
 
     struct iovec iov[2];
     struct msghdr msg;
+
+    local_info_ = get_rdma_conn_info(&ctx_, &rdma_dev_);
 
     iov[0].iov_base = &header;
     iov[0].iov_len = FIXED_HEADER_SIZE;
@@ -704,7 +478,7 @@ void Connection::post_recv_ack(rdma_info_base *info) {
     recv_wr.sg_list = NULL;
     recv_wr.num_sge = 0;
 
-    int ret = ibv_post_recv(qp_, &recv_wr, &bad_recv_wr);
+    int ret = ibv_post_recv(ctx_.qp, &recv_wr, &bad_recv_wr);
     if (ret) {
         ERROR("Failed to post recv wr :{}", strerror(ret));
     }
@@ -873,7 +647,7 @@ int Connection::w_rdma_async(const std::vector<std::string> &keys,
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_SIGNALED;
 
-    int ret = ibv_post_send(qp_, &wr, &bad_wr);
+    int ret = ibv_post_send(ctx_.qp, &wr, &bad_wr);
     if (ret) {
         ERROR("Failed to post RDMA send :{}", strerror(ret));
         return -1;
@@ -941,7 +715,7 @@ int Connection::r_rdma_async(const std::vector<std::string> &keys,
     wr.send_flags = IBV_SEND_SIGNALED;
 
     int ret;
-    ret = ibv_post_send(qp_, &wr, &bad_wr);
+    ret = ibv_post_send(ctx_.qp, &wr, &bad_wr);
 
     if (ret) {
         ERROR("Failed to post RDMA send :{}", strerror(ret));
@@ -958,7 +732,7 @@ int Connection::register_mr(void *base_ptr, size_t ptr_region_size) {
         ibv_dereg_mr(local_mr_[(uintptr_t)base_ptr]);
     }
     struct ibv_mr *mr;
-    mr = ibv_reg_mr(pd_, base_ptr, ptr_region_size,
+    mr = ibv_reg_mr(rdma_dev_.pd, base_ptr, ptr_region_size,
                     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
     if (!mr) {
         ERROR("Failed to register memory regions, size: {}", ptr_region_size);

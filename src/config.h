@@ -19,6 +19,7 @@ typedef struct ServerConfig {
     std::string link_type;
     int minimal_allocate_size;  // unit: KB
     bool auto_increase;
+    int hint_gid_index;
 } server_config_t;
 
 typedef struct ClientConfig {
@@ -28,6 +29,7 @@ typedef struct ClientConfig {
     std::string host_addr;
     int ib_port;
     std::string link_type;
+    int hint_gid_index;
 } client_config_t;
 
 #endif

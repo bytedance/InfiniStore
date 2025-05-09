@@ -7,6 +7,7 @@ import subprocess
 import asyncio
 from functools import singledispatchmethod
 from typing import Optional, Union, List, Tuple
+import socket
 
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -62,6 +63,7 @@ class ClientConfig(_infinistore.ClientConfig):
             self.log_level = os.environ["INFINISTORE_LOG_LEVEL"]
         else:
             self.log_level = kwargs.get("log_level", "warning")
+        self.hint_gid_index = kwargs.get("hint_gid_index", -1)
 
     def __repr__(self):
         return (
@@ -104,6 +106,8 @@ class ServerConfig(_infinistore.ServerConfig):
             prealloc_size (int): The preallocation size. Defaults to 16.
             minimal_allocate_size (int): The minimal allocation size. Defaults to 64.
             auto_increase (bool): indicate if infinistore will be automatically increased. 10GB each time. Default False.
+            hint_gid_index (int): The hint GID index. Defaults to -1.
+
         """
 
     def __init__(self, **kwargs):
@@ -120,6 +124,7 @@ class ServerConfig(_infinistore.ServerConfig):
         self.evict_min_threshold = kwargs.get("evict_min_threshold", 0.6)
         self.evict_max_threshold = kwargs.get("evict_max_threshold", 0.8)
         self.evict_interval = kwargs.get("evict_interval", 5)
+        self.hint_gid_index = kwargs.get("hint_gid_index", -1)
 
     def __repr__(self):
         return (
@@ -128,7 +133,8 @@ class ServerConfig(_infinistore.ServerConfig):
             f"dev_name='{self.dev_name}', ib_port={self.ib_port}, link_type='{self.link_type}', "
             f"prealloc_size={self.prealloc_size}, minimal_allocate_size={self.minimal_allocate_size}, "
             f"auto_increase={self.auto_increase}, evict_min_threshold={self.evict_min_threshold}, "
-            f"evict_max_threshold={self.evict_max_threshold}, evict_interval={self.evict_interval}"
+            f"evict_max_threshold={self.evict_max_threshold}, evict_interval={self.evict_interval}, "
+            f"hint_gid_index={self.hint_gid_index}"
         )
 
     def verify(self):
@@ -317,6 +323,7 @@ class InfinityConnection:
         loop = asyncio.get_running_loop()
 
         def blocking_connect():
+            self.config.host_addr = self.resolve_hostname(self.config.host_addr)
             if self.conn.init_connection(self.config) < 0:
                 raise Exception("Failed to initialize remote connection")
             if self.config.connection_type == TYPE_RDMA:
@@ -325,6 +332,25 @@ class InfinityConnection:
                 self.rdma_connected = True
 
         await loop.run_in_executor(None, blocking_connect)
+
+    @staticmethod
+    def resolve_hostname(hostname: str) -> str:
+        try:
+            socket.inet_aton(hostname)
+            return hostname
+        except socket.error:
+            pass
+
+        # If the hostname is not an IP address, resolve it
+        Logger.info(f"Resolving hostname: {hostname}")
+        try:
+            infos = socket.getaddrinfo(
+                hostname, None, socket.AF_INET, socket.SOCK_STREAM
+            )
+            # Return the first resolved IPv4 address
+            return infos[0][4][0]
+        except socket.gaierror as e:
+            raise Exception(f"Failed to resolve hostname '{hostname}': {e}")
 
     def connect(self):
         """
@@ -338,7 +364,9 @@ class InfinityConnection:
         if self.rdma_connected:
             raise Exception("Already connected to remote instance")
 
-        print(f"connecting to {self.config.host_addr}")
+        self.config.host_addr = self.resolve_hostname(self.config.host_addr)
+
+        # check if the hostname is valid
         ret = self.conn.init_connection(self.config)
         if ret < 0:
             raise Exception("Failed to initialize remote connection")
