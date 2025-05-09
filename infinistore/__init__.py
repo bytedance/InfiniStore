@@ -14,6 +14,11 @@ from .lib import (
     InfiniStoreKeyNotFound,
     evict_cache,
 )
+from .cluster_mgr import (
+    ConsulClusterMgr,
+    NoClusterMgr,
+)
+
 
 __all__ = [
     "InfinityConnection",
@@ -30,4 +35,6 @@ __all__ = [
     "InfiniStoreException",
     "InfiniStoreKeyNotFound",
     "evict_cache",
+    "ConsulClusterMgr",
+    "NoClusterMgr",
 ]
