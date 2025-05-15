@@ -42,7 +42,8 @@ PYBIND11_MODULE(_infinistore, m) {
         .def_readwrite("dev_name", &client_config_t::dev_name)
         .def_readwrite("ib_port", &client_config_t::ib_port)
         .def_readwrite("link_type", &client_config_t::link_type)
-        .def_readwrite("host_addr", &client_config_t::host_addr);
+        .def_readwrite("host_addr", &client_config_t::host_addr)
+        .def_readwrite("hint_gid_index", &client_config_t::hint_gid_index);
 
     py::class_<Connection, std::shared_ptr<Connection>>(m, "Connection")
         .def(py::init<>())
@@ -106,7 +107,8 @@ PYBIND11_MODULE(_infinistore, m) {
         .def_readwrite("link_type", &ServerConfig::link_type)
         .def_readwrite("prealloc_size", &ServerConfig::prealloc_size)
         .def_readwrite("minimal_allocate_size", &ServerConfig::minimal_allocate_size)
-        .def_readwrite("auto_increase", &ServerConfig::auto_increase);
+        .def_readwrite("auto_increase", &ServerConfig::auto_increase)
+        .def_readwrite("hint_gid_index", &ServerConfig::hint_gid_index);
     m.def(
         "purge_kv_map", []() { kv_map.clear(); }, "purge kv map");
     m.def(

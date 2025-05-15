@@ -7,21 +7,15 @@
 #include "config.h"
 #include "log.h"
 #include "mempool.h"
+#include "rdma.h"
 #include "utils.h"
 
 extern server_config_t global_config;
 extern uv_loop_t *loop;
 extern uv_tcp_t server;
-// global ibv context
-extern struct ibv_context *ib_ctx;
-extern struct ibv_pd *pd;
-extern MM *mm;
+extern struct rdma_device rdma_dev;
 
-extern int gidx;
-extern int lid;
-extern uint8_t ib_port;
-// local active_mtu attr, after exchanging with remote, we will use the min of the two for path.mtu
-extern ibv_mtu active_mtu;
+extern MM *mm;
 
 // indicate if the MM extend is in flight
 extern bool extend_in_flight;

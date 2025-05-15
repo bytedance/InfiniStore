@@ -137,6 +137,13 @@ def parse_args():
         default=False,
         help="enable evict cache, default False",
     )
+    parser.add_argument(
+        "--hint-gid-index",
+        required=False,
+        default=-1,
+        help="hint gid index, default 1, -1 means no hint",
+        type=int,
+    )
 
     return parser.parse_args()
 
@@ -156,18 +163,7 @@ async def periodic_evict(min_threshold: float, max_threshold: float, interval: i
 def main():
     args = parse_args()
     config = ServerConfig(
-        manage_port=args.manage_port,
-        service_port=args.service_port,
-        log_level=args.log_level,
-        prealloc_size=args.prealloc_size,
-        dev_name=args.dev_name,
-        ib_port=args.ib_port,
-        link_type=args.link_type,
-        minimal_allocate_size=args.minimal_allocate_size,
-        auto_increase=args.auto_increase,
-        evict_interval=args.evict_interval,
-        evict_min_threshold=args.evict_min_threshold,
-        evict_max_threshold=args.evict_max_threshold,
+        **vars(args),
     )
     config.verify()
 

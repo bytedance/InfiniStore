@@ -7,6 +7,7 @@ import subprocess
 import asyncio
 from functools import singledispatchmethod
 from typing import Optional, Union, List, Tuple
+import socket
 
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -62,12 +63,13 @@ class ClientConfig(_infinistore.ClientConfig):
             self.log_level = os.environ["INFINISTORE_LOG_LEVEL"]
         else:
             self.log_level = kwargs.get("log_level", "warning")
+        self.hint_gid_index = kwargs.get("hint_gid_index", -1)
 
     def __repr__(self):
         return (
             f"ServerConfig(service_port={self.service_port}, "
             f"log_level='{self.log_level}', host_addr='{self.host_addr}', "
-            f"connection_type='{self.connection_type.name}')"
+            f"connection_type='{self.connection_type}')"
             f"dev_name='{self.dev_name}', ib_port={self.ib_port}, link_type='{self.link_type}'"
         )
 
@@ -104,6 +106,8 @@ class ServerConfig(_infinistore.ServerConfig):
             prealloc_size (int): The preallocation size. Defaults to 16.
             minimal_allocate_size (int): The minimal allocation size. Defaults to 64.
             auto_increase (bool): indicate if infinistore will be automatically increased. 10GB each time. Default False.
+            hint_gid_index (int): The hint GID index. Defaults to -1.
+
         """
 
     def __init__(self, **kwargs):
@@ -120,6 +124,7 @@ class ServerConfig(_infinistore.ServerConfig):
         self.evict_min_threshold = kwargs.get("evict_min_threshold", 0.6)
         self.evict_max_threshold = kwargs.get("evict_max_threshold", 0.8)
         self.evict_interval = kwargs.get("evict_interval", 5)
+        self.hint_gid_index = kwargs.get("hint_gid_index", -1)
 
     def __repr__(self):
         return (
@@ -128,7 +133,8 @@ class ServerConfig(_infinistore.ServerConfig):
             f"dev_name='{self.dev_name}', ib_port={self.ib_port}, link_type='{self.link_type}', "
             f"prealloc_size={self.prealloc_size}, minimal_allocate_size={self.minimal_allocate_size}, "
             f"auto_increase={self.auto_increase}, evict_min_threshold={self.evict_min_threshold}, "
-            f"evict_max_threshold={self.evict_max_threshold}, evict_interval={self.evict_interval}"
+            f"evict_max_threshold={self.evict_max_threshold}, evict_interval={self.evict_interval}, "
+            f"hint_gid_index={self.hint_gid_index}"
         )
 
     def verify(self):
@@ -317,6 +323,7 @@ class InfinityConnection:
         loop = asyncio.get_running_loop()
 
         def blocking_connect():
+            self.config.host_addr = self.resolve_hostname(self.config.host_addr)
             if self.conn.init_connection(self.config) < 0:
                 raise Exception("Failed to initialize remote connection")
             if self.config.connection_type == TYPE_RDMA:
@@ -325,6 +332,25 @@ class InfinityConnection:
                 self.rdma_connected = True
 
         await loop.run_in_executor(None, blocking_connect)
+
+    @staticmethod
+    def resolve_hostname(hostname: str) -> str:
+        try:
+            socket.inet_aton(hostname)
+            return hostname
+        except socket.error:
+            pass
+
+        # If the hostname is not an IP address, resolve it
+        Logger.info(f"Resolving hostname: {hostname}")
+        try:
+            infos = socket.getaddrinfo(
+                hostname, None, socket.AF_INET, socket.SOCK_STREAM
+            )
+            # Return the first resolved IPv4 address
+            return infos[0][4][0]
+        except socket.gaierror as e:
+            raise Exception(f"Failed to resolve hostname '{hostname}': {e}")
 
     def connect(self):
         """
@@ -338,7 +364,9 @@ class InfinityConnection:
         if self.rdma_connected:
             raise Exception("Already connected to remote instance")
 
-        print(f"connecting to {self.config.host_addr}")
+        self.config.host_addr = self.resolve_hostname(self.config.host_addr)
+
+        # check if the hostname is valid
         ret = self.conn.init_connection(self.config)
         if ret < 0:
             raise Exception("Failed to initialize remote connection")
@@ -361,7 +389,7 @@ class InfinityConnection:
 
         Parameters:
         key (str): The key associated with the cached item.
-        **kwargs: Additional keyword arguments.
+        ``**kwargs``: Additional keyword arguments.
 
         Returns:
         np.ndarray: The cached item retrieved from the TCP connection.
@@ -397,6 +425,31 @@ class InfinityConnection:
     async def rdma_write_cache_async(
         self, blocks: List[Tuple[str, int]], block_size: int, ptr: int
     ):
+        """
+        Asynchronously writes data to the infinistore cache using RDMA.
+
+        This function performs an RDMA write operation to the infinistore cache.
+        It requires an active RDMA connection and uses a semaphore to limit
+        concurrent writes. The operation is completed asynchronously.
+
+        Args:
+            blocks (List[Tuple[str, int]]): A list of tuples where each tuple
+                contains a key (str) and an offset (int) representing the data
+                blocks to be written.
+            block_size (int): The size of each block to be written, in bytes.
+            ptr (int): A pointer to the memory location containing the data to
+                be written.
+
+        Raises:
+            Exception: If RDMA is not connected or if the write operation fails.
+        Returns:
+            int: The result code of the write operation if successful.
+
+        Notes:
+            - If the RDMA connection is not established, an exception is raised.
+            - The semaphore ensures that the number of concurrent writes is
+              limited.
+        """
         if not self.rdma_connected:
             raise Exception("this function is only valid for connected rdma")
 
@@ -430,6 +483,30 @@ class InfinityConnection:
     async def rdma_read_cache_async(
         self, blocks: List[Tuple[str, int]], block_size: int, ptr: int
     ):
+        """
+        Asynchronously reads data from the RDMA cache.
+
+        This function performs an asynchronous RDMA read operation for the specified
+        blocks of data. It requires an active RDMA connection and uses a semaphore
+        to limit concurrent operations.
+
+        Args:
+            blocks (List[Tuple[str, int]]): A list of tuples where each tuple contains
+                a key (str) and an offset (int) specifying the data to be read.
+            block_size (int): The size of each block to be read.
+            ptr (int): A pointer to the memory location where the data will be stored.
+
+        Raises:
+            Exception: If RDMA is not connected or if the RDMA read operation fails.
+            InfiniStoreKeyNotFound: If some keys are not found in the RDMA cache.
+
+        Returns:
+            int: The result code of the RDMA read operation (e.g., 200 for success).
+
+        Note:
+            This function uses a callback mechanism to handle the result of the RDMA
+            read operation. The semaphore is released after the operation completes.
+        """
         if not self.rdma_connected:
             raise Exception("this function is only valid for connected rdma")
         pass

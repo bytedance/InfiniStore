@@ -30,7 +30,7 @@ Integration with SGLang and other inference engines are in progress.
 Most users just need to deploy and run InfiniStore, and they don't need to understand how InfiniStore works internally. For these users, PIP is the recommended way to install:
 
 ```
-pip install InfiniStore
+pip install infinistore
 ```
 
 ## Install from Source Code
@@ -53,7 +53,7 @@ pre-commit install
 After installation, either from PIP or from source code, run the following command to verify your installation is successful:
 
 ```
-InfiniStore --manage-port 8088
+infinistore --manage-port 8088
 curl http://127.0.0.1:8088/selftest
 ```
 
@@ -70,28 +70,28 @@ Your server machine may be equipped with TCP network or RDMA network. The comman
 For TCP/IP Network:
 
 ```
-InfiniStore --service-port 12345
+infinistore --service-port 12345
 ```
 
 For RDMA(RoCE):
 
 ```
-InfiniStore --service-port 12345 --dev-name mlx5_0 --link-type Ethernet
+infinistore --service-port 12345 --dev-name mlx5_0 --link-type Ethernet
 ```
 
 For RDMA(Infiniband):
 
 ```
-InfiniStore --service-port 12345 --dev-name mlx5_0 --link-type IB
+infinistore --service-port 12345 --dev-name mlx5_0 --link-type IB
 ```
 
 2. **Run InfiniStore Client**
 
 Check the following example code to run an InfiniStore client:
 
-* ```InfiniStore/example/client.py```
-* ```InfiniStore/example/client_async.py```
-* ```InfiniStore/example/client_async_single.py```
+* ```infinistore/example/client.py```
+* ```infinistore/example/client_async.py```
+* ```infinistore/example/client_async_single.py```
 
 ## Run Within a vLLM Cluster
 
@@ -120,7 +120,7 @@ If you are submitting a code change, run the following unit test and pre-commit 
 2. **Run Unit Tests**
 
 ```
-pytest InfiniStore/test_InfiniStore.py
+pytest infinistore/test_infinistore.py
 ```
 
 3. **Run Pre-commit Checks**

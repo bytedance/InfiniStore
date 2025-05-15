@@ -12,6 +12,7 @@
 int send_exact(int socket, const void *buffer, size_t length);
 int recv_exact(int socket, void *buffer, size_t length);
 
+std::string human_readable_gid(union ibv_gid gid);
 void print_rdma_conn_info(rdma_conn_info_t *info, bool is_remote);
 void signal_handler(int signum);
 

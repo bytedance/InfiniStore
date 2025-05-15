@@ -45,33 +45,32 @@ int recv_exact(int socket, void* buffer, size_t length) {
     return 0;  // Successfully received exactly `length` bytes
 }
 
-std::string human_readable_gid(rdma_conn_info_t* info) {
+std::string human_readable_gid(union ibv_gid gid) {
     std::string gid_str;
     bool is_ipv4_mapped = true;
 
     // Check if the GID is an IPv4-mapped IPv6 address
     for (int i = 0; i < 10; ++i) {
-        if (info->gid.raw[i] != 0) {
+        if (gid.raw[i] != 0) {
             is_ipv4_mapped = false;
             break;
         }
     }
-    if (info->gid.raw[10] != 0xff || info->gid.raw[11] != 0xff) {
+    if (gid.raw[10] != 0xff || gid.raw[11] != 0xff) {
         is_ipv4_mapped = false;
     }
 
     if (is_ipv4_mapped) {
         // Convert the last 4 bytes to an IPv4 address
         char ipv4_str[INET_ADDRSTRLEN];
-        uint8_t ipv4_addr[4] = {info->gid.raw[12], info->gid.raw[13], info->gid.raw[14],
-                                info->gid.raw[15]};
+        uint8_t ipv4_addr[4] = {gid.raw[12], gid.raw[13], gid.raw[14], gid.raw[15]};
         inet_ntop(AF_INET, ipv4_addr, ipv4_str, INET_ADDRSTRLEN);
         gid_str = ipv4_str;
     }
     else {
         // Convert the GID to a standard IPv6 address string
         for (int i = 0; i < 16; ++i) {
-            gid_str += fmt::format("{:02x}", static_cast<uint8_t>(info->gid.raw[i]));
+            gid_str += fmt::format("{:02x}", static_cast<uint8_t>(gid.raw[i]));
             if (i % 2 == 1 && i != 15) {
                 gid_str += ":";
             }
@@ -81,7 +80,7 @@ std::string human_readable_gid(rdma_conn_info_t* info) {
 }
 
 void print_rdma_conn_info(rdma_conn_info_t* info, bool is_remote) {
-    std::string gid_str = human_readable_gid(info);
+    std::string gid_str = human_readable_gid(info->gid);
     if (is_remote) {
         DEBUG("remote rdma_conn_info: psn: {}, qpn: {}, gid: {}, enum mtu: {}", (uint32_t)info->psn,
               (uint32_t)info->qpn, gid_str, (uint32_t)info->mtu);
