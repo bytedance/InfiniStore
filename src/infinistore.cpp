@@ -117,11 +117,6 @@ Client::~Client() {
         uv_poll_stop(&poll_handle_);
     }
 
-    if (handle_) {
-        free(handle_);
-        handle_ = NULL;
-    }
-
     if (send_mr_) {
         ibv_dereg_mr(send_mr_);
         send_mr_ = NULL;
@@ -155,6 +150,12 @@ Client::~Client() {
         tcp_recv_buffer_ = NULL;
     }
 
+    while (!outstanding_rdma_ops_queue_.empty()) {
+        auto item = outstanding_rdma_ops_queue_.front();
+        delete[] item.first;   // ibv_send_wr array
+        delete[] item.second;  // ibv_sge array
+        outstanding_rdma_ops_queue_.pop_front();
+    }
     destroy_rdma_context(&rdma_ctx_);
 }
 
