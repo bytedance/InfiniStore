@@ -53,10 +53,10 @@ const float ON_DEMAND_MIN_THRESHOLD = 0.8;
 const float ON_DEMAND_MAX_THRESHOLD = 0.95;
 
 struct Client {
-    uv_tcp_t *handle_ = NULL;    // uv_stream_t
-    read_state_t state_;         // state of the client, for parsing the request
-    size_t bytes_read_ = 0;      // bytes read so far, for parsing the request
-    size_t expected_bytes_ = 0;  // expected size of the body
+    uv_tcp_t *handle_ = nullptr;  // uv_stream_t
+    read_state_t state_;          // state of the client, for parsing the request
+    size_t bytes_read_ = 0;       // bytes read so far, for parsing the request
+    size_t expected_bytes_ = 0;   // expected size of the body
     header_t header_;
 
     boost::intrusive_ptr<PTR> current_tcp_task_;
@@ -66,14 +66,14 @@ struct Client {
     struct ibv_mr *recv_mr_[MAX_RECV_WR] = {};
 
     // RDMA send buffer
-    char *send_buffer_ = NULL;
-    struct ibv_mr *send_mr_ = NULL;
+    char *send_buffer_ = nullptr;
+    struct ibv_mr *send_mr_ = nullptr;
     int outstanding_rdma_ops_ = 0;
     std::deque<std::pair<struct ibv_send_wr *, struct ibv_sge *>> outstanding_rdma_ops_queue_;
 
     // TCP send buffer
-    char *tcp_send_buffer_ = NULL;
-    char *tcp_recv_buffer_ = NULL;
+    char *tcp_send_buffer_ = nullptr;
+    char *tcp_recv_buffer_ = nullptr;
 
     rdma_conn_info_t remote_info_;
     rdma_conn_info_t local_info_;
@@ -119,35 +119,35 @@ Client::~Client() {
 
     if (send_mr_) {
         ibv_dereg_mr(send_mr_);
-        send_mr_ = NULL;
+        send_mr_ = nullptr;
     }
 
     if (send_buffer_) {
         free(send_buffer_);
-        send_buffer_ = NULL;
+        send_buffer_ = nullptr;
     }
 
     for (int i = 0; i < MAX_RECV_WR; i++) {
         if (recv_mr_[i]) {
-            assert(recv_buffer_[i] != NULL);
+            assert(recv_buffer_[i] != nullptr);
             ibv_dereg_mr(recv_mr_[i]);
-            recv_mr_[i] = NULL;
+            recv_mr_[i] = nullptr;
         }
 
         if (recv_buffer_[i]) {
             free(recv_buffer_[i]);
-            recv_buffer_[i] = NULL;
+            recv_buffer_[i] = nullptr;
         }
     }
 
     if (tcp_send_buffer_) {
         free(tcp_send_buffer_);
-        tcp_send_buffer_ = NULL;
+        tcp_send_buffer_ = nullptr;
     }
 
     if (tcp_recv_buffer_) {
         free(tcp_recv_buffer_);
-        tcp_recv_buffer_ = NULL;
+        tcp_recv_buffer_ = nullptr;
     }
 
     while (!outstanding_rdma_ops_queue_.empty()) {
@@ -163,7 +163,7 @@ void on_close(uv_handle_t *handle) {
     client_t *client = (client_t *)handle->data;
 
     if (client) {
-        client->handle_ = NULL;
+        client->handle_ = nullptr;
         delete client;
     }
 
@@ -305,15 +305,15 @@ int Client::tcp_payload_request(const TCPPayloadRequest *req) {
 
 void Client::post_ack(int return_code) {
     // send an error code back
-    struct ibv_send_wr wr = {0};
-    struct ibv_send_wr *bad_wr = NULL;
+    struct ibv_send_wr wr {};
+    struct ibv_send_wr *bad_wr = nullptr;
     wr.wr_id = 0;
     wr.opcode = IBV_WR_SEND_WITH_IMM;
     wr.imm_data = return_code;
     wr.send_flags = 0;
-    wr.sg_list = NULL;
+    wr.sg_list = nullptr;
     wr.num_sge = 0;
-    wr.next = NULL;
+    wr.next = nullptr;
     int ret = ibv_post_send(rdma_ctx_.qp, &wr, &bad_wr);
     if (ret) {
         ERROR("Failed to send WITH_IMM message: {}", strerror(ret));
@@ -339,7 +339,7 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
         ERROR("Failed to request CQ notification");
         return;
     }
-    struct ibv_wc wc = {0};
+    struct ibv_wc wc {};
     while (ibv_poll_cq(cq, 1, &wc) > 0) {
         if (wc.status == IBV_WC_SUCCESS) {
             if (wc.opcode == IBV_WC_RECV) {  // recv RDMA read/write request
@@ -459,15 +459,15 @@ void extend_mempool() {
 }
 
 int Client::prepare_recv_rdma_request(int buf_idx) {
-    struct ibv_sge sge = {0};
-    struct ibv_recv_wr rwr = {0};
-    struct ibv_recv_wr *bad_wr = NULL;
+    struct ibv_sge sge {};
+    struct ibv_recv_wr rwr {};
+    struct ibv_recv_wr *bad_wr = nullptr;
     sge.addr = (uintptr_t)(recv_buffer_[buf_idx]);
     sge.length = PROTOCOL_BUFFER_SIZE;
     sge.lkey = recv_mr_[buf_idx]->lkey;
 
     rwr.wr_id = buf_idx;
-    rwr.next = NULL;
+    rwr.next = nullptr;
     rwr.sg_list = &sge;
     rwr.num_sge = 1;
     if (ibv_post_recv(rdma_ctx_.qp, &rwr, &bad_wr)) {
@@ -762,7 +762,7 @@ int Client::rdma_exchange() {
 // send_resp send fixed size response to client.
 void Client::send_resp(int return_code, void *buf, size_t size) {
     if (size > 0) {
-        assert(buf != NULL);
+        assert(buf != nullptr);
     }
     uv_write_t *write_req = (uv_write_t *)malloc(sizeof(uv_write_t));
 
@@ -883,7 +883,7 @@ void handle_request(uv_stream_t *stream, client_t *client) {
     }
 
     if (error_code != 0) {
-        client->send_resp(error_code, NULL, 0);
+        client->send_resp(error_code, nullptr, 0);
         client->reset_client_read_state();
     }
 
@@ -931,7 +931,7 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
             }
 
             case READ_BODY: {
-                assert(client->tcp_recv_buffer_ != NULL);
+                assert(client->tcp_recv_buffer_ != nullptr);
 
                 DEBUG("reading body, bytes_read: {}, expected_bytes: {}", client->bytes_read_,
                       client->expected_bytes_);
@@ -961,7 +961,7 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
                     ptr->lru_it = --lru_queue.end();
 
                     client->current_tcp_task_.reset();
-                    client->send_resp(FINISH, NULL, 0);
+                    client->send_resp(FINISH, nullptr, 0);
                     client->reset_client_read_state();
                 }
             }
@@ -990,7 +990,7 @@ void on_new_connection(uv_stream_t *server, int status) {
         uv_read_start((uv_stream_t *)client_handle, alloc_buffer, on_read);
     }
     else {
-        uv_close((uv_handle_t *)client_handle, NULL);
+        uv_close((uv_handle_t *)client_handle, nullptr);
     }
 }
 
@@ -1009,7 +1009,7 @@ int register_server(unsigned long loop_ptr, server_config_t config) {
     loop = uv_default_loop();
 
     loop = (uv_loop_t *)loop_ptr;
-    assert(loop != NULL);
+    assert(loop != nullptr);
     uv_tcp_init(loop, &server);
     struct sockaddr_in addr;
     uv_ip4_addr("0.0.0.0", config.service_port, &addr);

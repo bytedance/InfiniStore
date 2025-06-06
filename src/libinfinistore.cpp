@@ -23,13 +23,13 @@ SendBuffer::SendBuffer(struct ibv_pd *pd, size_t size) {
         assert(false);
     }
     mr_ = ibv_reg_mr(pd, buffer_, PROTOCOL_BUFFER_SIZE, IBV_ACCESS_LOCAL_WRITE);
-    assert(mr_ != NULL);
+    assert(mr_ != nullptr);
 }
 
 SendBuffer::~SendBuffer() {
     DEBUG("destroying send buffer");
-    assert(buffer_ != NULL);
-    assert(mr_ != NULL);
+    assert(buffer_ != nullptr);
+    assert(mr_ != nullptr);
     if (mr_) {
         ibv_dereg_mr(mr_);
         mr_ = nullptr;
@@ -101,7 +101,7 @@ Connection::~Connection() {
 }
 
 void Connection::cq_handler() {
-    assert(ctx_.comp_channel != NULL);
+    assert(ctx_.comp_channel != nullptr);
 
     while (!stop_) {
         struct ibv_cq *ev_cq;
@@ -179,7 +179,7 @@ void Connection::cq_handler() {
 
 SendBuffer *Connection::get_send_buffer() {
     /*
-    if send buffer list is empty,we just report error, and return NULL
+    if send buffer list is empty,we just report error, and return nullptr
     normal user should not have too many inflight requests, so we just report error
     */
     assert(!send_buffers_.empty());
@@ -469,13 +469,13 @@ int Connection::delete_keys(const std::vector<std::string> &keys) {
 }
 
 void Connection::post_recv_ack(rdma_info_base *info) {
-    struct ibv_recv_wr recv_wr = {0};
-    struct ibv_recv_wr *bad_recv_wr = NULL;
+    struct ibv_recv_wr recv_wr {};
+    struct ibv_recv_wr *bad_recv_wr = nullptr;
 
     recv_wr.wr_id = (uintptr_t)info;
 
-    recv_wr.next = NULL;
-    recv_wr.sg_list = NULL;
+    recv_wr.next = nullptr;
+    recv_wr.sg_list = nullptr;
     recv_wr.num_sge = 0;
 
     int ret = ibv_post_recv(ctx_.qp, &recv_wr, &bad_recv_wr);
@@ -541,7 +541,7 @@ std::vector<unsigned char> *Connection::r_tcp(const std::string &key) {
 }
 
 int Connection::w_tcp(const std::string &key, void *ptr, size_t size) {
-    assert(ptr != NULL);
+    assert(ptr != nullptr);
 
     FlatBufferBuilder builder(64 << 10);
     auto req = CreateTCPPayloadRequestDirect(builder, key.c_str(), size, OP_TCP_PUT);
@@ -596,7 +596,7 @@ int Connection::w_tcp(const std::string &key, void *ptr, size_t size) {
 int Connection::w_rdma_async(const std::vector<std::string> &keys,
                              const std::vector<size_t> offsets, int block_size, void *base_ptr,
                              std::function<void(int)> callback) {
-    assert(base_ptr != NULL);
+    assert(base_ptr != nullptr);
     assert(offsets.size() == keys.size());
 
     if (!local_mr_.count((uintptr_t)base_ptr)) {
@@ -634,9 +634,9 @@ int Connection::w_rdma_async(const std::vector<std::string> &keys,
     post_recv_ack(info);
 
     // send msg
-    struct ibv_sge sge = {0};
-    struct ibv_send_wr wr = {0};
-    struct ibv_send_wr *bad_wr = NULL;
+    struct ibv_sge sge {};
+    struct ibv_send_wr wr {};
+    struct ibv_send_wr *bad_wr = nullptr;
     sge.addr = (uintptr_t)builder.GetBufferPointer();
     sge.length = builder.GetSize();
     sge.lkey = send_buffer->mr_->lkey;
@@ -659,7 +659,7 @@ int Connection::w_rdma_async(const std::vector<std::string> &keys,
 int Connection::r_rdma_async(const std::vector<std::string> &keys,
                              const std::vector<size_t> offsets, int block_size, void *base_ptr,
                              std::function<void(unsigned int code)> callback) {
-    assert(base_ptr != NULL);
+    assert(base_ptr != nullptr);
 
     if (!local_mr_.count((uintptr_t)base_ptr)) {
         ERROR("Please register memory first");
@@ -668,7 +668,7 @@ int Connection::r_rdma_async(const std::vector<std::string> &keys,
 
     INFO("r_rdma,, block_size: {}, base_ptr: {}", block_size, base_ptr);
     struct ibv_mr *mr = local_mr_[(uintptr_t)base_ptr];
-    assert(mr != NULL);
+    assert(mr != nullptr);
 
     auto *info = new rdma_read_info([callback](unsigned int code) { callback(code); });
     post_recv_ack(info);
@@ -700,13 +700,13 @@ int Connection::r_rdma_async(const std::vector<std::string> &keys,
     builder.Finish(req);
 
     // send RDMA request
-    struct ibv_sge sge = {0};
+    struct ibv_sge sge {};
     sge.addr = (uintptr_t)builder.GetBufferPointer();
     sge.length = builder.GetSize();
     sge.lkey = send_buffer->mr_->lkey;
 
-    struct ibv_send_wr wr = {0};
-    struct ibv_send_wr *bad_wr = NULL;
+    struct ibv_send_wr wr {};
+    struct ibv_send_wr *bad_wr = nullptr;
 
     wr.wr_id = (uintptr_t)send_buffer;
     wr.opcode = IBV_WR_SEND;
@@ -726,7 +726,7 @@ int Connection::r_rdma_async(const std::vector<std::string> &keys,
 }
 
 int Connection::register_mr(void *base_ptr, size_t ptr_region_size) {
-    assert(base_ptr != NULL);
+    assert(base_ptr != nullptr);
     if (local_mr_.count((uintptr_t)base_ptr)) {
         WARN("this memory address is already registered!");
         ibv_dereg_mr(local_mr_[(uintptr_t)base_ptr]);

@@ -6,7 +6,7 @@
 #include "utils.h"
 
 int close_rdma_device(struct rdma_device *rdma_dev) {
-    assert(rdma_dev != NULL);
+    assert(rdma_dev != nullptr);
 
     if (rdma_dev->pd) {
         ibv_dealloc_pd(rdma_dev->pd);
@@ -39,7 +39,7 @@ int destroy_rdma_context(struct rdma_context *ctx) {
 int open_rdma_device(std::string dev_name, int ib_port, std::string link_type, int hint_gid_index,
                      struct rdma_device *rdma_dev) {
     assert(link_type == "IB" || link_type == "Ethernet");
-    assert(rdma_dev != NULL);
+    assert(rdma_dev != nullptr);
 
     rdma_dev->link_type = link_type;
 
@@ -133,8 +133,8 @@ int open_rdma_device(std::string dev_name, int ib_port, std::string link_type, i
 }
 
 int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev) {
-    assert(ctx != NULL);
-    assert(rdma_dev != NULL);
+    assert(ctx != nullptr);
+    assert(rdma_dev != nullptr);
 
     ctx->comp_channel = ibv_create_comp_channel(rdma_dev->ib_ctx);
     if (!ctx->comp_channel) {
@@ -144,7 +144,7 @@ int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev) {
 
     // Create Completion Queue
     ctx->cq =
-        ibv_create_cq(rdma_dev->ib_ctx, MAX_SEND_WR + MAX_RECV_WR, NULL, ctx->comp_channel, 0);
+        ibv_create_cq(rdma_dev->ib_ctx, MAX_SEND_WR + MAX_RECV_WR, nullptr, ctx->comp_channel, 0);
     if (!ctx->cq) {
         ERROR("Failed to create CQ");
         return -1;
@@ -192,7 +192,7 @@ int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev) {
 }
 
 rdma_conn_info_t get_rdma_conn_info(struct rdma_context *ctx, struct rdma_device *rdma_dev) {
-    assert(ctx != NULL);
+    assert(ctx != nullptr);
     rdma_conn_info_t conn_info = {
         .qpn = ctx->qp->qp_num,
         .psn = ctx->psn,
@@ -204,8 +204,8 @@ rdma_conn_info_t get_rdma_conn_info(struct rdma_context *ctx, struct rdma_device
 }
 
 int modify_qp_to_init(struct rdma_context *ctx, struct rdma_device *rdma_dev) {
-    assert(ctx != NULL);
-    assert(rdma_dev != NULL);
+    assert(ctx != nullptr);
+    assert(rdma_dev != nullptr);
 
     struct ibv_qp_attr attr = {};
     attr.qp_state = IBV_QPS_INIT;
@@ -225,7 +225,7 @@ int modify_qp_to_init(struct rdma_context *ctx, struct rdma_device *rdma_dev) {
 }
 
 int modify_qp_to_rts(struct rdma_context *ctx) {
-    assert(ctx != NULL);
+    assert(ctx != nullptr);
 
     struct ibv_qp_attr attr = {};
     attr.qp_state = IBV_QPS_RTS;
@@ -248,8 +248,8 @@ int modify_qp_to_rts(struct rdma_context *ctx) {
 
 int modify_qp_to_rtr(struct rdma_context *ctx, struct rdma_device *rdma_dev,
                      rdma_conn_info_t *remote_info) {
-    assert(ctx != NULL);
-    assert(rdma_dev != NULL);
+    assert(ctx != nullptr);
+    assert(rdma_dev != nullptr);
 
     struct ibv_qp_attr attr = {};
     attr.qp_state = IBV_QPS_RTR;

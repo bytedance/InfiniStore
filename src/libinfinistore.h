@@ -23,8 +23,8 @@
 // because write_cache will be invoked asynchronously,
 // so each request will have a standalone send buffer.
 struct SendBuffer {
-    void *buffer_ = NULL;
-    struct ibv_mr *mr_ = NULL;
+    void *buffer_ = nullptr;
+    struct ibv_mr *mr_ = nullptr;
 
     SendBuffer(struct ibv_pd *pd, size_t size);
     SendBuffer(const SendBuffer &) = delete;
@@ -78,7 +78,7 @@ class Connection {
     */
     boost::lockfree::spsc_queue<SendBuffer *> send_buffers_{MAX_RECV_WR};
 
-    // struct ibv_comp_channel *comp_channel_ = NULL;
+    // struct ibv_comp_channel *comp_channel_ = nullptr;
     std::future<void> cq_future_;  // cq thread
 
     std::atomic<bool> stop_{false};
