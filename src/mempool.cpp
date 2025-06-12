@@ -14,12 +14,12 @@ MemoryPool::MemoryPool(size_t pool_size, size_t block_size, struct ibv_pd* pd)
     : pool_(nullptr),
       pool_size_(pool_size),
       block_size_(block_size),
-      pd_(pd),
-      mr_(nullptr),
+      total_blocks_(pool_size / block_size),
       last_search_position_(0),
-      allocated_blocks_(0) {
-    // calculate total blocks
-    total_blocks_ = pool_size_ / block_size_;
+      allocated_blocks_(0),
+      mr_(nullptr),
+      pd_(pd) {
+    // verify blocks calculation
     assert(pool_size % block_size == 0);
 
     INFO(

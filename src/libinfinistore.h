@@ -18,18 +18,11 @@
 #include "log.h"
 #include "protocol.h"
 #include "rdma.h"
+#include "utils.h"
 
-// RDMA send buffer
-// because write_cache will be invoked asynchronously,
-// so each request will have a standalone send buffer.
-struct SendBuffer {
-    void *buffer_ = NULL;
-    struct ibv_mr *mr_ = NULL;
-
-    SendBuffer(struct ibv_pd *pd, size_t size);
-    SendBuffer(const SendBuffer &) = delete;
-    ~SendBuffer();
-};
+// Type aliases for clarity
+using SendBuffer = Buffer;
+using RecvBuffer = Buffer;
 
 enum class WrType {
     BASE,
@@ -42,6 +35,8 @@ struct rdma_info_base {
     WrType wr_type;
 
    public:
+    RecvBuffer *recv_buffer = nullptr;  // Associated receive buffer
+
     rdma_info_base(WrType wr_type) : wr_type(wr_type) {}
     virtual ~rdma_info_base() = default;
     WrType get_wr_type() const { return wr_type; }
@@ -55,8 +50,8 @@ struct rdma_write_info : rdma_info_base {
 
 struct rdma_read_info : rdma_info_base {
     // call back function.
-    std::function<void(unsigned int)> callback;
-    rdma_read_info(std::function<void(unsigned int)> callback)
+    std::function<void(unsigned int, unsigned int[8])> callback;
+    rdma_read_info(std::function<void(unsigned int, unsigned int[8])> callback)
         : rdma_info_base(WrType::RDMA_READ_ACK), callback(callback) {}
 };
 
@@ -70,13 +65,25 @@ class Connection {
     rdma_conn_info_t local_info_;
     rdma_conn_info_t remote_info_;
 
-    std::unordered_map<uintptr_t, struct ibv_mr *> local_mr_;
+    // binary tree
+
+    struct cmp {
+        bool operator()(const std::pair<uintptr_t, size_t> &a,
+                        const std::pair<uintptr_t, size_t> &b) const {
+            return a.first < b.first;
+        }
+    };
+    // sort by uintptr_t
+    std::map<std::pair<uintptr_t, size_t>, struct ibv_mr *, cmp> local_mr_;
 
     /*
     This is MAX_RECV_WR not MAX_SEND_WR,
     because server also has the same number of buffers
     */
     boost::lockfree::spsc_queue<SendBuffer *> send_buffers_{MAX_RECV_WR};
+
+    // Receive buffers for RDMA operations, each buffer is 32 bytes
+    boost::lockfree::spsc_queue<RecvBuffer *> recv_buffers_{MAX_RECV_WR};
 
     // struct ibv_comp_channel *comp_channel_ = NULL;
     std::future<void> cq_future_;  // cq thread
@@ -93,10 +100,14 @@ class Connection {
     void close_conn();
     int init_connection(client_config_t config);
     int setup_rdma(client_config_t config);
-    int r_rdma_async(const std::vector<std::string> &keys, const std::vector<size_t> offsets,
-                     int block_size, void *base_ptr, std::function<void(unsigned int)> callback);
-    int w_rdma_async(const std::vector<std::string> &keys, const std::vector<size_t> offsets,
-                     int block_size, void *base_ptr, std::function<void(int)> callback);
+
+    int r_rdma_async(const std::vector<std::string> &keys,
+                     const std::vector<uintptr_t> &local_address,
+                     const std::vector<uint32_t> &sizes,
+                     std::function<void(unsigned int, unsigned int[8])> callback);
+    int w_rdma_async(const std::vector<std::string> &keys,
+                     const std::vector<uintptr_t> &local_address,
+                     const std::vector<uint32_t> &sizes, std::function<void(int)> callback);
     int w_tcp(const std::string &key, void *ptr, size_t size);
     std::vector<unsigned char> *r_tcp(const std::string &key);
 
@@ -107,15 +118,19 @@ class Connection {
 
     int exchange_conn_info();
 
-    void post_recv_ack(rdma_info_base *info);
+    int post_recv_ack(rdma_info_base *info);
 
     void cq_handler();
     // TODO: refactor to c++ style
     SendBuffer *get_send_buffer();
     void release_send_buffer(SendBuffer *buffer);
 
-    SendBuffer *get_recv_buffer();
-    void release_recv_buffer(SendBuffer *buffer);
+    RecvBuffer *get_recv_buffer();
+    void release_recv_buffer(RecvBuffer *buffer);
+
+   private:
+    bool mr_overlap(void *base_ptr, size_t ptr_region_size);
+    struct ibv_mr *mr_contains(void *base_ptr, size_t ptr_region_size);
 };
 
 #endif  // LIBINFINISTORE_H

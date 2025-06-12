@@ -1,6 +1,6 @@
 FROM quay.io/pypa/manylinux_2_28_x86_64
 
-RUN yum -y install rdma-core-devel libuv-devel
+RUN yum -y install rdma-core-devel libuv-devel elfutils-devel
 
 RUN dnf clean all
 RUN dnf makecache
@@ -42,7 +42,7 @@ ENV PATH=/usr/local/flatbuffers/bin:$PATH
 RUN rm -rf /tmp/flatbuffers
 
 # Install boost
-RUN dnf install -y boost boost-devel
+RUN dnf install -y boost boost-devel elfutils-devel
 
 # The above get the build environment ready!
 WORKDIR /app

@@ -12,6 +12,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <boost/circular_buffer.hpp>
 #include <chrono>
 #include <deque>
 #include <future>
@@ -22,6 +23,7 @@
 #include "ibv_helper.h"
 #include "protocol.h"
 #include "rdma.h"
+#include "utils.h"
 
 server_config_t global_config;
 
@@ -39,6 +41,15 @@ bool extend_in_flight = false;
 // so we have to pop from both to evict the memory
 std::list<boost::intrusive_ptr<PTR>> lru_queue;
 std::unordered_map<std::string, boost::intrusive_ptr<PTR>> kv_map;
+
+struct InflightOP {
+    boost::intrusive_ptr<PTR> ptr;
+    uint64_t remote_addr;
+    uint32_t remote_rkey;
+    InflightOP(boost::intrusive_ptr<PTR> ptr, uint64_t remote_addr, uint32_t remote_rkey)
+        : ptr(std::move(ptr)), remote_addr(remote_addr), remote_rkey(remote_rkey) {}
+    InflightOP(const InflightOP &) = default;
+};
 
 typedef enum {
     READ_HEADER,
@@ -66,8 +77,8 @@ struct Client {
     struct ibv_mr *recv_mr_[MAX_RECV_WR] = {};
 
     // RDMA send buffer
-    char *send_buffer_ = NULL;
-    struct ibv_mr *send_mr_ = NULL;
+    boost::circular_buffer<Buffer *> send_buffers_{MAX_RECV_WR};
+
     int outstanding_rdma_ops_ = 0;
     std::deque<std::pair<struct ibv_send_wr *, struct ibv_sge *>> outstanding_rdma_ops_queue_;
 
@@ -84,6 +95,21 @@ struct Client {
 
     uv_poll_t poll_handle_;
 
+    struct RdmaCompletionInfo {
+        int ret_code;
+        unsigned int payload_[8];  // 8 unsigned int for payload
+        std::unique_ptr<std::vector<InflightOP>> inflight_rdma_ops;
+        RdmaCompletionInfo(int ret_code, const unsigned int *payload,
+                           std::unique_ptr<std::vector<InflightOP>> inflight_rdma_ops)
+            : ret_code(ret_code), inflight_rdma_ops(std::move(inflight_rdma_ops)) {
+            if (payload) {
+                memcpy(payload_, payload, sizeof(unsigned int) * 8);
+            }
+            else {
+            }
+        }
+    };
+
     Client() = default;
     Client(const Client &) = delete;
     ~Client();
@@ -91,7 +117,7 @@ struct Client {
     void cq_poll_handle(uv_poll_t *handle, int status, int events);
     int read_rdma_cache(const RemoteMetaRequest *req);
     int write_rdma_cache(const RemoteMetaRequest *req);
-    void post_ack(int return_code);
+    void post_ack(int return_code, unsigned int payload[8]);
     int allocate_rdma(const RemoteMetaRequest *req);
     // send response to client through TCP
     void send_resp(int return_code, void *buf, size_t size);
@@ -103,9 +129,9 @@ struct Client {
     int delete_keys(const DeleteKeysRequest *request);
     int rdma_exchange();
     int prepare_recv_rdma_request(int buf_idx);
-    void perform_batch_rdma(const RemoteMetaRequest *remote_meta_req,
-                            std::vector<boost::intrusive_ptr<PTR>> *inflight_rdma_ops,
-                            enum ibv_wr_opcode opcode);
+    void perform_batch_rdma(std::unique_ptr<std::vector<InflightOP>> inflight_rdma_ops,
+                            enum ibv_wr_opcode opcode, const int ret_code,
+                            const unsigned int *ret_payload);
 };
 
 typedef struct Client client_t;
@@ -122,14 +148,8 @@ Client::~Client() {
         handle_ = NULL;
     }
 
-    if (send_mr_) {
-        ibv_dereg_mr(send_mr_);
-        send_mr_ = NULL;
-    }
-
-    if (send_buffer_) {
-        free(send_buffer_);
-        send_buffer_ = NULL;
+    for (auto send_buffer : send_buffers_) {
+        delete send_buffer;
     }
 
     for (int i = 0; i < MAX_RECV_WR; i++) {
@@ -296,16 +316,32 @@ int Client::tcp_payload_request(const TCPPayloadRequest *req) {
     return 0;
 }
 
-void Client::post_ack(int return_code) {
+void Client::post_ack(int return_code, unsigned int payload[8]) {
     // send an error code back
-    struct ibv_send_wr wr = {0};
+    struct ibv_send_wr wr {};
     struct ibv_send_wr *bad_wr = NULL;
-    wr.wr_id = 0;
     wr.opcode = IBV_WR_SEND_WITH_IMM;
     wr.imm_data = return_code;
-    wr.send_flags = 0;
-    wr.sg_list = NULL;
-    wr.num_sge = 0;
+    wr.wr_id = 0;
+    struct ibv_sge sge {};
+    if (payload != nullptr) {
+        assert(!send_buffers_.empty());
+        auto *buffer = send_buffers_.front();
+        send_buffers_.pop_front();
+        memcpy(buffer->buffer_, payload, sizeof(unsigned int) * 8);
+
+        sge.addr = (uintptr_t)buffer->buffer_;
+        sge.length = sizeof(unsigned int) * 8;  // 8 unsigned int
+        sge.lkey = buffer->mr_->lkey;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        wr.wr_id = (uintptr_t)buffer;  // use buffer as wr_id to track it
+    }
+    else {
+        wr.sg_list = NULL;
+        wr.num_sge = 0;
+    }
+    wr.send_flags = IBV_SEND_SIGNALED;
     wr.next = NULL;
     int ret = ibv_post_send(rdma_ctx_.qp, &wr, &bad_wr);
     if (ret) {
@@ -332,7 +368,7 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
         ERROR("Failed to request CQ notification");
         return;
     }
-    struct ibv_wc wc = {0};
+    struct ibv_wc wc = {};
     while (ibv_poll_cq(cq, 1, &wc) > 0) {
         if (wc.status == IBV_WC_SUCCESS) {
             if (wc.opcode == IBV_WC_RECV) {  // recv RDMA read/write request
@@ -344,14 +380,14 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                     case OP_RDMA_WRITE: {
                         int ret = write_rdma_cache(request);
                         if (ret != 0) {
-                            post_ack(ret);
+                            post_ack(ret, nullptr);
                         }
                         break;
                     }
                     case OP_RDMA_READ: {
                         int ret = read_rdma_cache(request);
                         if (ret != 0) {
-                            post_ack(ret);
+                            post_ack(ret, nullptr);
                         }
                         break;
                     }
@@ -366,17 +402,11 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                     return;
                 }
             }
-            else if (wc.opcode == IBV_WC_SEND) {  // allocate: response sent
-                DEBUG("allocate response sent");
-            }
-            else if (wc.opcode ==
-                     IBV_WC_RECV_RDMA_WITH_IMM) {  // write cache: we already have all data now.
-                // client should not use WRITE_WITH_IMM to notify.
-                // it should use COMMIT message to notify.
-                WARN("WRITE_WITH_IMM is not supported in server side");
-                if (prepare_recv_rdma_request(wc.wr_id) < 0) {
-                    ERROR("Failed to prepare recv rdma request");
-                    return;
+            else if (wc.opcode == IBV_WC_SEND) {
+                if (wc.wr_id != 0) {
+                    assert(!send_buffers_.full());
+                    auto *buffer = (Buffer *)wc.wr_id;
+                    send_buffers_.push_back(buffer);
                 }
             }
             else if (wc.opcode == IBV_WC_RDMA_WRITE || wc.opcode == IBV_WC_RDMA_READ) {
@@ -390,7 +420,6 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                     struct ibv_send_wr *wrs = item.first;
                     struct ibv_sge *sges = item.second;
                     ibv_send_wr *bad_wr = nullptr;
-                    DEBUG("IBV POST SEND, wr_id: {}", wrs[0].wr_id);
                     int ret = ibv_post_send(rdma_ctx_.qp, &wrs[0], &bad_wr);
                     if (ret) {
                         ERROR("Failed to post RDMA write {}", strerror(ret));
@@ -402,26 +431,26 @@ void Client::cq_poll_handle(uv_poll_t *handle, int status, int events) {
                     outstanding_rdma_ops_queue_.pop_front();
                 }
 
+                auto *complete_info = (RdmaCompletionInfo *)wc.wr_id;
                 if (wc.wr_id > 0) {
                     // last WR will inform that all RDMA write is finished,so we can dereference PTR
                     if (wc.opcode == IBV_WC_RDMA_READ) {
-                        auto inflight_rdma_writes =
-                            (std::vector<boost::intrusive_ptr<PTR>> *)wc.wr_id;
-                        for (auto ptr : *inflight_rdma_writes) {
-                            kv_map[ptr->key] = ptr;
-                            DEBUG("writing key done, {}", ptr->key);
-                            lru_queue.push_back(ptr);
-                            ptr->lru_it = --lru_queue.end();
+                        for (auto inflight_op : *complete_info->inflight_rdma_ops) {
+                            kv_map[inflight_op.ptr->key] = inflight_op.ptr;
+                            DEBUG("writing key done, {}", inflight_op.ptr->key);
+                            lru_queue.push_back(inflight_op.ptr);
+                            inflight_op.ptr->lru_it = --lru_queue.end();
                         }
-                        delete inflight_rdma_writes;
-                        post_ack(FINISH);
+                        post_ack(complete_info->ret_code, nullptr);
                     }
                     else if (wc.opcode == IBV_WC_RDMA_WRITE) {
-                        post_ack(FINISH);
-                        auto inflight_rdma_reads =
-                            (std::vector<boost::intrusive_ptr<PTR>> *)wc.wr_id;
-                        delete inflight_rdma_reads;
+                        assert(complete_info->payload_ != nullptr);
+                        post_ack(complete_info->ret_code, complete_info->payload_);
                     }
+                    else {
+                        ERROR("Unexpected wc opcode: {}", (int)wc.opcode);
+                    }
+                    delete complete_info;
                 }
             }
             else {
@@ -452,8 +481,8 @@ void extend_mempool() {
 }
 
 int Client::prepare_recv_rdma_request(int buf_idx) {
-    struct ibv_sge sge = {0};
-    struct ibv_recv_wr rwr = {0};
+    struct ibv_sge sge {};
+    struct ibv_recv_wr rwr {};
     struct ibv_recv_wr *bad_wr = NULL;
     sge.addr = (uintptr_t)(recv_buffer_[buf_idx]);
     sge.length = PROTOCOL_BUFFER_SIZE;
@@ -470,9 +499,10 @@ int Client::prepare_recv_rdma_request(int buf_idx) {
     return 0;
 }
 
-void Client::perform_batch_rdma(const RemoteMetaRequest *remote_meta_req,
-                                std::vector<boost::intrusive_ptr<PTR>> *inflight_rdma_ops,
-                                enum ibv_wr_opcode opcode) {
+void Client::perform_batch_rdma(std::unique_ptr<std::vector<InflightOP>> inflight_rdma_ops,
+                                enum ibv_wr_opcode opcode, const int ret_code,
+                                const unsigned int *ret_payload  // unsigned int[8]
+) {
     assert(opcode == IBV_WR_RDMA_READ || opcode == IBV_WR_RDMA_WRITE);
 
     const size_t max_wr = MAX_WR_BATCH;
@@ -491,36 +521,35 @@ void Client::perform_batch_rdma(const RemoteMetaRequest *remote_meta_req,
         sges = new struct ibv_sge[max_wr];
     }
 
-    int n = remote_meta_req->keys()->size();
+    int n = inflight_rdma_ops->size();
+
     for (int i = 0; i < n; i++) {
-        sges[num_wr].addr = (uintptr_t)(*inflight_rdma_ops)[i]->ptr;
-        sges[num_wr].length = (*inflight_rdma_ops)[i]->size;
-        sges[num_wr].lkey = mm->get_lkey((*inflight_rdma_ops)[i]->pool_idx);
+        sges[num_wr].addr = (uintptr_t)(*inflight_rdma_ops)[i].ptr->ptr;
+        sges[num_wr].length = (*inflight_rdma_ops)[i].ptr->size;
+        sges[num_wr].lkey = mm->get_lkey((*inflight_rdma_ops)[i].ptr->pool_idx);
 
         wrs[num_wr].wr_id = 0;
         wrs[num_wr].opcode = opcode;
         wrs[num_wr].sg_list = &sges[num_wr];
         wrs[num_wr].num_sge = 1;
-        wrs[num_wr].wr.rdma.remote_addr = remote_meta_req->remote_addrs()->Get(i);
-        wrs[num_wr].wr.rdma.rkey = remote_meta_req->rkey();
 
-        // wrs[num_wr].wr.rdma.rkey = remote_meta_req->rkey();
-        wrs[num_wr].next = (num_wr == max_wr - 1 || i == (int)remote_meta_req->keys()->size() - 1)
-                               ? nullptr
-                               : &wrs[num_wr + 1];
+        wrs[num_wr].wr.rdma.remote_addr = (*inflight_rdma_ops)[i].remote_addr;
+        wrs[num_wr].wr.rdma.rkey = (*inflight_rdma_ops)[i].remote_rkey;
 
-        wrs[num_wr].send_flags =
-            (num_wr == max_wr - 1 || i == (int)remote_meta_req->keys()->size() - 1)
-                ? IBV_SEND_SIGNALED
-                : 0;
+        wrs[num_wr].next = (num_wr == max_wr - 1 || i == n - 1) ? nullptr : &wrs[num_wr + 1];
 
-        if (i == remote_meta_req->keys()->size() - 1) {
-            wrs[num_wr].wr_id = (uintptr_t)inflight_rdma_ops;
+        wrs[num_wr].send_flags = (num_wr == max_wr - 1 || i == n - 1) ? IBV_SEND_SIGNALED : 0;
+
+        if (i == n - 1) {
+            // last WR will inform that all RDMA write is finished, so we can dereference PTR
+            auto *completion_info =
+                new RdmaCompletionInfo(ret_code, ret_payload, std::move(inflight_rdma_ops));
+            wrs[num_wr].wr_id = (uintptr_t)completion_info;
         }
 
         num_wr++;
 
-        if (num_wr == max_wr || i == remote_meta_req->keys()->size() - 1) {
+        if (num_wr == max_wr || i == n - 1) {
             if (!wr_full) {
                 struct ibv_send_wr *bad_wr = nullptr;
                 int ret = ibv_post_send(rdma_ctx_.qp, &wrs[0], &bad_wr);
@@ -563,36 +592,49 @@ int Client::write_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         return INVALID_REQ;
     }
 
-    // allocate memory
-    int block_size = remote_meta_req->block_size();
-    int n = remote_meta_req->keys()->size();
+    if (remote_meta_req->rkey()->size() != remote_meta_req->remote_addrs()->size()) {
+        ERROR("keys size and block_size size mismatch");
+        return INVALID_REQ;
+    }
+
+    int n = remote_meta_req->remote_addrs()->size();
 
     // create something.
 
-    auto *inflight_rdma_writes = new std::vector<boost::intrusive_ptr<PTR>>;
+    auto inflight_rdma_writes = std::make_unique<std::vector<InflightOP>>();
     inflight_rdma_writes->reserve(n);
 
     evict_cache(ON_DEMAND_MIN_THRESHOLD, ON_DEMAND_MAX_THRESHOLD);
 
+    bool allocated = false;
+
     int key_idx = 0;
-    bool allocated =
-        mm->allocate(block_size, n, [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
-            const auto *key = remote_meta_req->keys()->Get(key_idx);
-            auto ptr = boost::intrusive_ptr<PTR>(new PTR(addr, block_size, pool_idx, key->str()));
-            DEBUG("writing key: {}", key->str());
-            inflight_rdma_writes->push_back(ptr);
-            key_idx++;
-        });
+    for (const auto *key : *remote_meta_req->keys()) {
+        int block_size = remote_meta_req->block_size()->Get(key_idx);
+        allocated = mm->allocate(
+            block_size, 1, [&](void *addr, uint32_t lkey, uint32_t rkey, int pool_idx) {
+                auto ptr =
+                    boost::intrusive_ptr<PTR>(new PTR(addr, block_size, pool_idx, key->str()));
+                DEBUG("writing key: {}", key->str());
+                inflight_rdma_writes->push_back(
+                    InflightOP(ptr, remote_meta_req->remote_addrs()->Get(key_idx),
+                               remote_meta_req->rkey()->Get(key_idx)));
+            });
+        if (!allocated) {
+            ERROR("Failed to allocate memory");
+            return OUT_OF_MEMORY;
+        }
+        key_idx++;
+    }
 
     if (!allocated) {
         ERROR("Failed to allocate memory");
-        delete inflight_rdma_writes;
         return OUT_OF_MEMORY;
     }
 
     // perform rdma read to receive data from client
     // read remote address data to local address
-    perform_batch_rdma(remote_meta_req, inflight_rdma_writes, IBV_WR_RDMA_READ);
+    perform_batch_rdma(std::move(inflight_rdma_writes), IBV_WR_RDMA_READ, FINISH, nullptr);
 
     return 0;
 }
@@ -605,36 +647,50 @@ int Client::read_rdma_cache(const RemoteMetaRequest *remote_meta_req) {
         return INVALID_REQ;
     }
 
-    auto *inflight_rdma_reads = new std::vector<boost::intrusive_ptr<PTR>>;
+    auto inflight_rdma_reads = std::make_unique<std::vector<InflightOP>>();
 
-    inflight_rdma_reads->reserve(remote_meta_req->keys()->size());
+    unsigned int ret_payload[8] = {0};
 
-    for (const auto *key : *remote_meta_req->keys()) {
-        auto it = kv_map.find(key->str());
+    for (size_t i = 0; i < remote_meta_req->keys()->size(); i++) {
+        auto it = kv_map.find(remote_meta_req->keys()->Get(i)->str());
         if (it == kv_map.end()) {
-            WARN("Key not found: {}", key->str());
-            return KEY_NOT_FOUND;
+            WARN("Key not found: {}", remote_meta_req->keys()->Get(i)->str());
+            ret_payload[i / 8] |= (1 << (i % 8));  // set the bit for this key not found
+            continue;
         }
         const auto &ptr = it->second;
-
-        if (ptr->size > remote_meta_req->block_size()) {
+        if (ptr->size > (size_t)(remote_meta_req->block_size()->Get(i))) {
             WARN("remote region does not enough size: key:{}, actual size: {}, remote size :{}",
-                 key->str(), ptr->size, remote_meta_req->block_size());
-            return INVALID_REQ;
+                 remote_meta_req->keys()->Get(i)->str(), ptr->size,
+                 remote_meta_req->block_size()->Get(i));
+            ret_payload[i / 8] |= (1 << (i % 8));  // set the bit for this key not found
+            continue;
         }
 
-        inflight_rdma_reads->push_back(ptr);
+        inflight_rdma_reads->push_back(InflightOP(ptr, remote_meta_req->remote_addrs()->Get(i),
+                                                  remote_meta_req->rkey()->Get(i)));
     }
 
     // loop over inflight_rdma_reads to update lru_queue
-    for (auto ptr : *inflight_rdma_reads) {
-        lru_queue.erase(ptr->lru_it);
-        lru_queue.push_back(ptr);
-        ptr->lru_it = --lru_queue.end();
+    for (auto inflight_op : *inflight_rdma_reads) {
+        lru_queue.erase(inflight_op.ptr->lru_it);
+        lru_queue.push_back(inflight_op.ptr);
+        inflight_op.ptr->lru_it = --lru_queue.end();
     }
 
-    // write to  remote address data from local address
-    perform_batch_rdma(remote_meta_req, inflight_rdma_reads, IBV_WR_RDMA_WRITE);
+    int ret_code = FINISH;
+    if (inflight_rdma_reads->empty()) {
+        // no keys to read, just return
+        INFO("No keys to read, return FINISH");
+        return KEY_NOT_FOUND;
+    }
+    if (inflight_rdma_reads->size() < remote_meta_req->keys()->size()) {
+        // some keys not found, set ret_code to PARTIAL_SUCCESS
+        ret_code = PARTIAL_SUCCESS;
+    }
+
+    // write to remote address data from local address
+    perform_batch_rdma(std::move(inflight_rdma_reads), IBV_WR_RDMA_WRITE, ret_code, ret_payload);
 
     return 0;
 }
@@ -672,8 +728,6 @@ void on_write(uv_write_t *req, int status) {
 int Client::rdma_exchange() {
     INFO("do rdma exchange...");
 
-    int ret;
-
     if (rdma_connected_ == true) {
         ERROR("RDMA already connected");
         return SYSTEM_ERROR;
@@ -703,15 +757,8 @@ int Client::rdma_exchange() {
 
     rdma_connected_ = true;
 
-    if (posix_memalign((void **)&send_buffer_, 4096, PROTOCOL_BUFFER_SIZE) != 0) {
-        ERROR("Failed to allocate send buffer");
-        return SYSTEM_ERROR;
-    }
-
-    send_mr_ = ibv_reg_mr(rdma_dev.pd, send_buffer_, PROTOCOL_BUFFER_SIZE, IBV_ACCESS_LOCAL_WRITE);
-    if (!send_mr_) {
-        ERROR("Failed to register MR");
-        return SYSTEM_ERROR;
+    for (int i = 0; i < MAX_RECV_WR; i++) {
+        send_buffers_.push_back(new Buffer(rdma_dev.pd, 32));
     }
 
     for (int i = 0; i < MAX_RECV_WR; i++) {
@@ -941,8 +988,8 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
             }
             case READ_VALUE_THROUGH_TCP: {
                 size_t to_copy = MIN(nread - offset, client->expected_bytes_ - client->bytes_read_);
-                memcpy(client->current_tcp_task_->ptr + client->bytes_read_, buf->base + offset,
-                       to_copy);
+                memcpy(static_cast<char *>(client->current_tcp_task_->ptr) + client->bytes_read_,
+                       buf->base + offset, to_copy);
                 client->bytes_read_ += to_copy;
                 offset += to_copy;
                 if (client->bytes_read_ == client->expected_bytes_) {

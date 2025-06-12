@@ -9,6 +9,17 @@
 
 #include "protocol.h"
 
+// Generic RDMA buffer for both send and receive operations
+struct Buffer {
+    void *buffer_ = NULL;
+    struct ibv_mr *mr_ = NULL;
+    size_t size_;
+
+    Buffer(struct ibv_pd *pd, size_t size);
+    Buffer(const Buffer &) = delete;
+    ~Buffer();
+};
+
 int send_exact(int socket, const void *buffer, size_t length);
 int recv_exact(int socket, void *buffer, size_t length);
 
