@@ -103,10 +103,6 @@ The setup will varies depending on the specific vLLM cluster configurations. But
 * Install LMCache on all nodes
 * Install InfiniStore on all nodes
 
-Because this setup is a complicated process, we've made a separate demo repo for the PD disaggregation setup.
-
-Please refer to the repo for the details:  https://github.com/bytedance-iaas/splitwise-demos
-
 # Contribute to InfiniStore
 
 InfiniStore is an open-source project and community. We welcome anyone who is interested in helping improve InfiniStore, whether code contributions, document contributions or any other contributions.
