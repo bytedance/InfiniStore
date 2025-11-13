@@ -47,7 +47,7 @@ int open_rdma_device(std::string dev_name, int ib_port, std::string link_type, i
     struct ibv_device *ib_dev;
     int num_devices;
     dev_list = ibv_get_device_list(&num_devices);
-    if (!dev_list) {
+    if (!dev_list || num_devices <= 0) {
         ERROR("Failed to get RDMA devices list");
         return -1;
     }
