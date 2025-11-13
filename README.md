@@ -23,6 +23,28 @@ Currently InfiniStore has been integrated with vLLM. The integration is done via
 
 Integration with SGLang and other inference engines are in progress.
 
+
+# Performance
+
+Working with LMCache
+
+bench command:
+
+```
+python3 vllm/benchmarks/benchmark_serving.py --backend openai-chat --model /data/models/QwQ-32B --base-url http://127.0.0.1:8080 --endpoint /v1/chat/completions --num-prompts 16  --request-rate 1 --metric_percentiles '50,90,95,99' --goodput ttft:5000 tpot:50 --max-concurrency 16 --random-input-len 1000 --random-output-len 250 --dataset-name random --ignore-eos --seed 114
+```
+
+TTFT/TPOP results:
+
+|   ----         | PD infinistore      | PD lmcache  | PD redis| origin vllm|
+|----------|-------------------|----------------|------|---------|
+| TTFT  |1872ms  | 3700ms     |2700ms| 1712ms |
+| TPOT   | 50ms   |  59ms  |86ms| 84ms|
+
+
+compared to origin vllm, infinistore in PD shows very stable and shorter TPOT.
+
+
 # Installation
 
 ## Install from PIP
