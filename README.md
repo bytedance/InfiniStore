@@ -93,6 +93,78 @@ Check the following example code to run an InfiniStore client:
 * ```infinistore/example/client_async.py```
 * ```infinistore/example/client_async_single.py```
 
+## Run infinistore server in cluster mode
+
+1. **Start consul cluster**
+Infinistore leverages consul to manage the membership of service nodes, so you must setup a consul cluster in order to run infinistore in cluster mode.
+
+  a. Run a consul cluster with a single node
+
+```shell
+    docker run -d \
+       --name=consul \
+       --network=host \
+       -e CONSUL_BIND_INTERFACE=eth0 \
+       -e CONSUL_CLIENT_ADDR=0.0.0.0 \
+       -p 8500:8500 \
+       hashicorp/consul   
+
+  b. Start a consul cluster with three nodes
+# On the first node
+```shell
+    docker run -d \
+       --name consul-node1 \
+       -p 8301:8301 -p 8301:8301/udp \
+       -p 8302:8302 -p 8302:8302/udp \
+       -p 8500:8500 -p 8300:8300 \
+       -advertise {ip of first node} \
+       -server \
+       -bootstrap-expect=3 \
+       hashicorp/consul    
+
+# On the second node
+```shell
+    docker run -d \
+       --name consul-node2 \
+       -p 8301:8301 -p 8301:8301/udp \
+       -p 8302:8302 -p 8302:8302/udp \
+       -p 8500:8500 -p 8300:8300 \
+       -advertise {ip of the second node} \
+       -server \
+       hashicorp/consul \
+       -join consul-node1
+
+# On the third node
+```shell
+    docker run -d \
+       --name consul-node3 \
+       -p 8301:8301 -p 8301:8301/udp \
+       -p 8302:8302 -p 8302:8302/udp \
+       -p 8500:8500 -p 8300:8300 \
+       -advertise {ip of the third node} \
+       -server \
+       hashicorp/consul \
+       -join consul-node1
+
+2. **Start InfiniStore Server**
+For RDMA, the followings are the command to start the infinistore store on two nodes(you can add more nodes)
+
+# On the first node(may be different from consul cluster node)
+```shell
+    infinistore --service-port 12345 \
+       --dev-name mlx5_0 --link-type Ethernet \
+       --manage-port 8081 --bootstrap-ip {ip of one of the consul cluster nodes}:8500 \
+       --service-id infinistore1 --cluster-mode \
+       --host {ip of the current host}
+
+# On the second node(may be different from consul cluster node)
+```shell
+    infinistore --service-port 12345 \
+       --dev-name mlx5_0 --link-type Ethernet \
+       --manage-port 8081 --bootstrap-ip {ip of one of the consul cluster nodes}:8500 \
+       --service-id infinistore1 --cluster-mode \
+       --host {ip of the current host}
+
 ## Run Within a vLLM Cluster
 
 As illustrated in the previous section, InfiniStore enables different functionalities in a vLLM cluster: KV cache transfer between prefill nodes and decoding nodes, extended KV cache pool, cross-node KV cache reuse, etc.
