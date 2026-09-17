@@ -116,18 +116,21 @@ def parse_args():
         "--evict-interval",
         required=False,
         default=5,
+        type=int,
         help="evict interval, default 5s",
     )
     parser.add_argument(
         "--evict-min-threshold",
         required=False,
         default=0.6,
+        type=float,
         help="evict min threshold, default 0.6",
     )
     parser.add_argument(
         "--evict-max-threshold",
         required=False,
         default=0.8,
+        type=float,
         help="evict max threshold, default 0.8",
     )
     parser.add_argument(
