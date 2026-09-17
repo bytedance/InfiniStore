@@ -18,28 +18,6 @@
 #include "rdma.h"
 #include "utils.h"
 
-SendBuffer::SendBuffer(struct ibv_pd *pd, size_t size) {
-    if (posix_memalign(&buffer_, 4096, PROTOCOL_BUFFER_SIZE) != 0) {
-        assert(false);
-    }
-    mr_ = ibv_reg_mr(pd, buffer_, PROTOCOL_BUFFER_SIZE, IBV_ACCESS_LOCAL_WRITE);
-    assert(mr_ != NULL);
-}
-
-SendBuffer::~SendBuffer() {
-    DEBUG("destroying send buffer");
-    assert(buffer_ != NULL);
-    assert(mr_ != NULL);
-    if (mr_) {
-        ibv_dereg_mr(mr_);
-        mr_ = nullptr;
-    }
-    if (buffer_) {
-        free(buffer_);
-        buffer_ = nullptr;
-    }
-}
-
 /*
 because python will always hold GIL when doing ~Connection(), which could lead to deadlock,
 so we have to explicitly call close() to stop cq_handler.
@@ -85,10 +63,16 @@ Connection::~Connection() {
         // throw std::runtime_error("user should call close() before destroying connection");
     }
 
-    SendBuffer *buffer;
-    while (send_buffers_.pop(buffer)) {
-        if (buffer)
-            delete buffer;
+    SendBuffer *send_buffer;
+    while (send_buffers_.pop(send_buffer)) {
+        if (send_buffer)
+            delete send_buffer;
+    }
+
+    RecvBuffer *recv_buffer;
+    while (recv_buffers_.pop(recv_buffer)) {
+        if (recv_buffer)
+            delete recv_buffer;
     }
 
     for (auto it = local_mr_.begin(); it != local_mr_.end(); it++) {
@@ -131,27 +115,31 @@ void Connection::cq_handler() {
 
                     if (wc[i].opcode ==
                         IBV_WC_SEND) {  // read cache/allocate msg/commit msg: request sent
-                        DEBUG("read cache/allocated/commit msg request send {}, ",
-                              (uintptr_t)wc[i].wr_id);
+                        DEBUG("read/write request send {}, ", (uintptr_t)wc[i].wr_id);
                         release_send_buffer((SendBuffer *)wc[i].wr_id);
                     }
-                    else if (wc[i].opcode == IBV_WC_RECV) {  // allocate msg recved.
+                    else if (wc[i].opcode == IBV_WC_RECV) {
                         rdma_info_base *ptr = reinterpret_cast<rdma_info_base *>(wc[i].wr_id);
                         switch (ptr->get_wr_type()) {
                             case WrType::RDMA_READ_ACK: {
-                                DEBUG("read cache done: Received IMM, imm_data: {}",
-                                      wc[i].imm_data);
                                 auto *info = reinterpret_cast<rdma_read_info *>(ptr);
-                                info->callback(wc[i].imm_data);
+                                // Access the buffer directly when passing to callback
+                                info->callback(wc[i].imm_data, reinterpret_cast<unsigned int *>(
+                                                                   info->recv_buffer->buffer_));
+                                // Release the associated recv buffer
+                                if (info->recv_buffer) {
+                                    release_recv_buffer(info->recv_buffer);
+                                }
                                 delete info;
                                 break;
                             }
                             case WrType::RDMA_WRITE_ACK: {
-                                DEBUG("RDMA write cache done: Received IMM, imm_data: {}",
-                                      wc[i].imm_data);
                                 auto *info = reinterpret_cast<rdma_write_info *>(ptr);
                                 info->callback(wc[i].imm_data);
-                                DEBUG("RDMA_WRITE_ACK callback done");
+                                // Release the associated recv buffer
+                                if (info->recv_buffer) {
+                                    release_recv_buffer(info->recv_buffer);
+                                }
                                 delete info;
                                 break;
                             }
@@ -190,6 +178,20 @@ SendBuffer *Connection::get_send_buffer() {
 }
 
 void Connection::release_send_buffer(SendBuffer *buffer) { send_buffers_.push(buffer); }
+
+RecvBuffer *Connection::get_recv_buffer() {
+    /*
+    if recv buffer list is empty,we just report error, and return NULL
+    normal user should not have too many inflight requests, so we just report error
+    */
+    assert(!recv_buffers_.empty());
+
+    RecvBuffer *buffer;
+    assert(recv_buffers_.pop(buffer));
+    return buffer;
+}
+
+void Connection::release_recv_buffer(RecvBuffer *buffer) { recv_buffers_.push(buffer); }
 
 int Connection::setup_rdma(client_config_t config) {
     // if (init_rdma_resources(config) < 0) {
@@ -233,6 +235,11 @@ int Connection::setup_rdma(client_config_t config) {
     */
     for (int i = 0; i < MAX_RECV_WR; i++) {
         send_buffers_.push(new SendBuffer(rdma_dev_.pd, PROTOCOL_BUFFER_SIZE));
+    }
+
+    // Initialize receive buffers (32 bytes each)
+    for (int i = 0; i < MAX_RECV_WR; i++) {
+        recv_buffers_.push(new RecvBuffer(rdma_dev_.pd, 32));
     }
 
     stop_ = false;
@@ -468,20 +475,33 @@ int Connection::delete_keys(const std::vector<std::string> &keys) {
     return count;
 }
 
-void Connection::post_recv_ack(rdma_info_base *info) {
-    struct ibv_recv_wr recv_wr = {0};
+int Connection::post_recv_ack(rdma_info_base *info) {
+    RecvBuffer *recv_buffer = get_recv_buffer();
+
+    // Associate the recv_buffer with the info structure
+    info->recv_buffer = recv_buffer;
+
+    struct ibv_recv_wr recv_wr {};
     struct ibv_recv_wr *bad_recv_wr = NULL;
+    struct ibv_sge sge {};
+
+    sge.addr = (uintptr_t)recv_buffer->buffer_;
+    sge.length = 32;
+    sge.lkey = recv_buffer->mr_->lkey;
 
     recv_wr.wr_id = (uintptr_t)info;
-
     recv_wr.next = NULL;
-    recv_wr.sg_list = NULL;
-    recv_wr.num_sge = 0;
+    recv_wr.sg_list = &sge;
+    recv_wr.num_sge = 1;
 
     int ret = ibv_post_recv(ctx_.qp, &recv_wr, &bad_recv_wr);
     if (ret) {
         ERROR("Failed to post recv wr :{}", strerror(ret));
+        // Release the buffer back to the pool on error
+        release_recv_buffer(recv_buffer);
+        info->recv_buffer = nullptr;
     }
+    return ret;
 }
 
 std::vector<unsigned char> *Connection::r_tcp(const std::string &key) {
@@ -594,48 +614,44 @@ int Connection::w_tcp(const std::string &key, void *ptr, size_t size) {
 }
 
 int Connection::w_rdma_async(const std::vector<std::string> &keys,
-                             const std::vector<size_t> offsets, int block_size, void *base_ptr,
+                             const std::vector<uintptr_t> &local_address,
+                             const std::vector<uint32_t> &block_sizes,
                              std::function<void(int)> callback) {
-    assert(base_ptr != NULL);
-    assert(offsets.size() == keys.size());
-
-    if (!local_mr_.count((uintptr_t)base_ptr)) {
-        ERROR("Please register memory first {}", (uint64_t)base_ptr);
-        return -1;
-    }
-
-    struct ibv_mr *mr = local_mr_[(uintptr_t)base_ptr];
-
-    // remote_meta_request req = {
-    //     .keys = keys,
-    //     .block_size = block_size,
-    //     .op = OP_RDMA_WRITE,
-    //     .remote_addrs = remote_addrs,
-    // }
+    assert(local_address.size() > 0);
+    assert(local_address.size() == keys.size());
+    assert(keys.size() == block_sizes.size());
 
     SendBuffer *send_buffer = get_send_buffer();
     FixedBufferAllocator allocator(send_buffer->buffer_, PROTOCOL_BUFFER_SIZE);
     FlatBufferBuilder builder(64 << 10, &allocator);
     auto keys_offset = builder.CreateVectorOfStrings(keys);
+    auto remote_addrs_offset = builder.CreateVector(local_address);
+    auto sizes_offset = builder.CreateVector(block_sizes);
 
-    // address is base_ptr + offset
-    std::vector<unsigned long> remote_addrs;
-    for (size_t i = 0; i < offsets.size(); i++) {
-        remote_addrs.push_back((unsigned long)base_ptr + offsets[i]);
+    // build rkey array
+    std::vector<uint32_t> rkeys;
+    for (size_t i = 0; i < local_address.size(); i++) {
+        uintptr_t address = local_address[i];
+        size_t size = block_sizes[i];
+        auto mr = mr_contains((void *)address, size);
+        rkeys.push_back(mr->rkey);
     }
-    auto remote_addrs_offset = builder.CreateVector(remote_addrs);
-    auto req = CreateRemoteMetaRequest(builder, keys_offset, block_size, mr->rkey,
+    auto rkeys_offset = builder.CreateVector(rkeys);
+    auto req = CreateRemoteMetaRequest(builder, keys_offset, sizes_offset, rkeys_offset,
                                        remote_addrs_offset, OP_RDMA_WRITE);
-
     builder.Finish(req);
 
     // post recv msg first
     auto *info = new rdma_write_info(callback);
-    post_recv_ack(info);
+    if (post_recv_ack(info) < 0) {
+        ERROR("Failed to post recv ack for RDMA write");
+        delete info;  // Clean up if post_recv_ack fails
+        return -1;
+    }
 
     // send msg
-    struct ibv_sge sge = {0};
-    struct ibv_send_wr wr = {0};
+    struct ibv_sge sge {};
+    struct ibv_send_wr wr {};
     struct ibv_send_wr *bad_wr = NULL;
     sge.addr = (uintptr_t)builder.GetBufferPointer();
     sge.length = builder.GetSize();
@@ -657,55 +673,42 @@ int Connection::w_rdma_async(const std::vector<std::string> &keys,
 }
 
 int Connection::r_rdma_async(const std::vector<std::string> &keys,
-                             const std::vector<size_t> offsets, int block_size, void *base_ptr,
-                             std::function<void(unsigned int code)> callback) {
-    assert(base_ptr != NULL);
+                             const std::vector<uintptr_t> &local_address,
+                             const std::vector<uint32_t> &block_sizes,
+                             std::function<void(unsigned int, unsigned int[8])> callback) {
+    assert(local_address.size() == keys.size());
+    assert(block_sizes.size() == keys.size());
 
-    if (!local_mr_.count((uintptr_t)base_ptr)) {
-        ERROR("Please register memory first");
-        return -1;
-    }
-
-    INFO("r_rdma,, block_size: {}, base_ptr: {}", block_size, base_ptr);
-    struct ibv_mr *mr = local_mr_[(uintptr_t)base_ptr];
-    assert(mr != NULL);
-
-    auto *info = new rdma_read_info([callback](unsigned int code) { callback(code); });
-    post_recv_ack(info);
-
-    // std::vector<std::string> keys;
-    std::vector<uintptr_t> remote_addrs;
-    for (auto &offset : offsets) {
-        remote_addrs.push_back((uintptr_t)(base_ptr + offset));
-    }
-
-    /*
-    remote_meta_req = {
-        .keys = keys,
-        .block_size = block_size,
-        .rkey = mr->rkey,
-        .remote_addrs = remote_addrs,
-        .op = OP_RDMA_READ,
-    }
-    */
     SendBuffer *send_buffer = get_send_buffer();
     FixedBufferAllocator allocator(send_buffer->buffer_, PROTOCOL_BUFFER_SIZE);
     FlatBufferBuilder builder(64 << 10, &allocator);
-
     auto keys_offset = builder.CreateVectorOfStrings(keys);
-    auto remote_addrs_offset = builder.CreateVector(remote_addrs);
-    auto req = CreateRemoteMetaRequest(builder, keys_offset, block_size, mr->rkey,
-                                       remote_addrs_offset, OP_RDMA_READ);
+    auto remote_addrs_offset = builder.CreateVector(local_address);
+    auto sizes_offset = builder.CreateVector(block_sizes);
 
+    // build rkey array
+    std::vector<uint32_t> rkeys;
+    for (size_t i = 0; i < local_address.size(); i++) {
+        uintptr_t address = local_address[i];
+        size_t size = block_sizes[i];
+        auto mr = mr_contains((void *)address, size);
+        rkeys.push_back(mr->rkey);
+    }
+    auto rkeys_offset = builder.CreateVector(rkeys);
+    auto req = CreateRemoteMetaRequest(builder, keys_offset, sizes_offset, rkeys_offset,
+                                       remote_addrs_offset, OP_RDMA_READ);
     builder.Finish(req);
 
+    auto *info = new rdma_read_info(callback);
+    post_recv_ack(info);
+
     // send RDMA request
-    struct ibv_sge sge = {0};
+    struct ibv_sge sge {};
     sge.addr = (uintptr_t)builder.GetBufferPointer();
     sge.length = builder.GetSize();
     sge.lkey = send_buffer->mr_->lkey;
 
-    struct ibv_send_wr wr = {0};
+    struct ibv_send_wr wr {};
     struct ibv_send_wr *bad_wr = NULL;
 
     wr.wr_id = (uintptr_t)send_buffer;
@@ -725,12 +728,62 @@ int Connection::r_rdma_async(const std::vector<std::string> &keys,
     return 0;
 }
 
+struct ibv_mr *Connection::mr_contains(void *base_ptr, size_t ptr_region_size) {
+    assert(base_ptr != NULL);
+
+    uintptr_t base_ptr_int = (uintptr_t)base_ptr;
+    uintptr_t end_ptr_int = base_ptr_int + ptr_region_size;
+
+    auto it = local_mr_.upper_bound({base_ptr_int, 0});
+    if (it != local_mr_.begin()) {
+        --it;
+        if (it->first.first <= base_ptr_int && it->first.first + it->first.second >= end_ptr_int) {
+            return it->second;
+        }
+    }
+    return nullptr;
+}
+
+bool Connection::mr_overlap(void *base_ptr, size_t ptr_region_size) {
+    assert(base_ptr != NULL);
+
+    uintptr_t base_ptr_int = (uintptr_t)base_ptr;
+    uintptr_t end_ptr_int = base_ptr_int + ptr_region_size;
+
+    auto it = local_mr_.lower_bound({base_ptr_int, 0});
+    if (it != local_mr_.end()) {
+        if (it->first.first < end_ptr_int) {
+            // corner case: allow exactly the same region
+            if (base_ptr_int == it->first.first &&
+                base_ptr_int + ptr_region_size == it->first.first + it->first.second) {
+                WARN("overlap with existing mr, but same region");
+                return false;
+            }
+            return true;
+        }
+    }
+
+    // check the last element
+    if (it != local_mr_.begin()) {
+        --it;
+        size_t prev_end = it->first.first + it->first.second;
+        if (base_ptr_int < prev_end) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 int Connection::register_mr(void *base_ptr, size_t ptr_region_size) {
     assert(base_ptr != NULL);
-    if (local_mr_.count((uintptr_t)base_ptr)) {
-        WARN("this memory address is already registered!");
-        ibv_dereg_mr(local_mr_[(uintptr_t)base_ptr]);
+
+    // detect overlap of _local_mr_
+    if (mr_overlap(base_ptr, ptr_region_size)) {
+        ERROR("overlap with existing mr");
+        return -1;
     }
+
     struct ibv_mr *mr;
     mr = ibv_reg_mr(rdma_dev_.pd, base_ptr, ptr_region_size,
                     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
@@ -739,6 +792,6 @@ int Connection::register_mr(void *base_ptr, size_t ptr_region_size) {
         return -1;
     }
     INFO("register mr done for base_ptr: {}, size: {}", (uintptr_t)base_ptr, ptr_region_size);
-    local_mr_[(uintptr_t)base_ptr] = mr;
+    local_mr_.insert({{(uintptr_t)base_ptr, ptr_region_size}, mr});
     return 0;
 }

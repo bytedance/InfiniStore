@@ -21,7 +21,7 @@ int ibv_read_sysfs_file(const char *dir, const char *file, char *buf, size_t siz
     if (len > 0) {
         if (buf[len - 1] == '\n')
             buf[--len] = '\0';
-        else if (len < size)
+        else if ((size_t)len < size)
             buf[len] = '\0';
         else
             /* We would have to truncate the contents to NULL

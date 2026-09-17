@@ -13,6 +13,7 @@ from .lib import (
     InfiniStoreException,
     InfiniStoreKeyNotFound,
     evict_cache,
+    Desc,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "InfiniStoreException",
     "InfiniStoreKeyNotFound",
     "evict_cache",
+    "Desc",
 ]

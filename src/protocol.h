@@ -8,7 +8,6 @@
 
 #include "flatbuffers/flatbuffers.h"
 // RDMA protocols
-#include "allocate_response_generated.h"
 #include "meta_request_generated.h"
 
 // local TCP protocols
@@ -60,6 +59,7 @@ std::string op_name(char op);
 #define RETRY 408
 #define SYSTEM_ERROR 503
 #define OUT_OF_MEMORY 507
+#define PARTIAL_SUCCESS 206
 
 #define RETURN_CODE_SIZE sizeof(int)
 

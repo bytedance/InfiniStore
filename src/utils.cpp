@@ -9,11 +9,13 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <boost/stacktrace.hpp>
+#define BACKWARD_HAS_DW 1
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 
+#include "backward.hpp"
 #include "log.h"
 
 int send_exact(int socket, const void* buffer, size_t length) {
@@ -93,10 +95,33 @@ void print_rdma_conn_info(rdma_conn_info_t* info, bool is_remote) {
 
 void signal_handler(int signum) {
     INFO("Interrupt signal ({}) received.", signum);
-    boost::stacktrace::stacktrace st;
+
+    using namespace backward;
+    StackTrace st;
+    st.load_here(32);
+
+    TraceResolver tr;
+    tr.load_stacktrace(st);
+
     std::ostringstream oss;
-    oss << st;
-    ERROR("Stacktrace:\n{}", oss.str());
+    oss << "Detailed Stacktrace:\n";
+
+    for (size_t i = 0; i < st.size(); ++i) {
+        ResolvedTrace trace = tr.resolve(st[i]);
+        oss << "#" << i << " ";
+
+        if (!trace.object_function.empty()) {
+            oss << trace.object_function;
+        }
+
+        if (!trace.source.filename.empty()) {
+            oss << " at " << trace.source.filename << ":" << trace.source.line;
+        }
+
+        oss << "\n";
+    }
+
+    ERROR("{}", oss.str());
     exit(1);
 }
 
@@ -113,3 +138,25 @@ template void print_vector<float>(float* ptr, size_t size);
 template void print_vector<double>(double* ptr, size_t size);
 template void print_vector<int>(int* ptr, size_t size);
 template void print_vector<char>(char* ptr, size_t size);
+
+// Buffer implementation
+Buffer::Buffer(struct ibv_pd* pd, size_t size) : size_(size) {
+    if (posix_memalign(&buffer_, 4096, size) != 0) {
+        throw std::runtime_error("Failed to allocate buffer");
+    }
+
+    mr_ = ibv_reg_mr(pd, buffer_, size, IBV_ACCESS_LOCAL_WRITE);
+    if (!mr_) {
+        free(buffer_);
+        throw std::runtime_error("Failed to register memory region");
+    }
+}
+
+Buffer::~Buffer() {
+    if (mr_) {
+        ibv_dereg_mr(mr_);
+    }
+    if (buffer_) {
+        free(buffer_);
+    }
+}

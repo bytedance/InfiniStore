@@ -153,7 +153,7 @@ def test_batch_read_write_cache(server, separated_gpu):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="RDMA_DEV[0]",
+        dev_name=f"{RDMA_DEV[0]}",
     )
 
     config.connection_type = infinistore.TYPE_RDMA
@@ -273,7 +273,7 @@ def test_key_check(server):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="RDMA_DEV[0]",
+        dev_name=f"{RDMA_DEV[0]}",
         connection_type=infinistore.TYPE_RDMA,
     )
     conn = infinistore.InfinityConnection(config)
@@ -293,7 +293,7 @@ def test_get_match_last_index(server):
         host_addr="127.0.0.1",
         service_port=92345,
         link_type=infinistore.LINK_ETHERNET,
-        dev_name="RDMA_DEV[0]",
+        dev_name=f"{RDMA_DEV[0]}",
         connection_type=infinistore.TYPE_RDMA,
     )
     conn = infinistore.InfinityConnection(config)
@@ -308,6 +308,46 @@ def test_get_match_last_index(server):
         )
     )
     assert conn.get_match_last_index(["A", "B", "C", "key1", "D", "E"]) == 3
+    conn.close()
+
+
+def test_partial_read_write(server):
+    config = infinistore.ClientConfig(
+        host_addr="127.0.0.1",
+        service_port=92345,
+        link_type=infinistore.LINK_ETHERNET,
+        dev_name=f"{RDMA_DEV[0]}",
+        connection_type=infinistore.TYPE_RDMA,
+    )
+    conn = infinistore.InfinityConnection(config)
+    conn.connect()
+
+    src = torch.randn(4096, device="cuda", dtype=torch.float32)
+    torch.cuda.synchronize(src.device)
+
+    conn.register_mr(src.data_ptr(), src.numel() * src.element_size())
+
+    element_size = torch._utils._element_size(torch.float32)
+
+    async def write_and_read():
+        # Write only the first 1024 elements
+        await conn.rdma_write_cache_async2(
+            [infinistore.Desc("key1", src.data_ptr(), 1024 * element_size)]
+        )
+        ret = await conn.rdma_read_cache_async2(
+            [
+                infinistore.Desc("key1", src.data_ptr(), 1024 * element_size),
+                infinistore.Desc(
+                    "key_unknown",
+                    src.data_ptr() + 1024 * element_size,
+                    1024 * element_size,
+                ),
+            ]
+        )
+        assert ret == [0, -1]
+
+    asyncio.run(write_and_read())
+
     conn.close()
 
 
@@ -569,3 +609,180 @@ def test_overwrite_tcp(server):
         assert len(dst) == len(src)
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_basic_read_write_cache_async2(server, dtype):
+    config = infinistore.ClientConfig(
+        host_addr="127.0.0.1",
+        service_port=92345,
+        link_type=infinistore.LINK_ETHERNET,
+        dev_name=f"{RDMA_DEV[0]}",
+    )
+
+    config.connection_type = infinistore.TYPE_RDMA
+
+    conn = infinistore.InfinityConnection(config)
+    conn.connect()
+
+    # key is random string
+    key = generate_random_string(10)
+    src = [i for i in range(4096)]
+
+    src_tensor = torch.tensor(src, device="cuda:0", dtype=dtype)
+
+    torch.cuda.synchronize(src_tensor.device)
+
+    conn.register_mr(
+        src_tensor.data_ptr(), src_tensor.numel() * src_tensor.element_size()
+    )
+    element_size = torch._utils._element_size(dtype)
+
+    async def run_write():
+        desc = infinistore.Desc(key, src_tensor.data_ptr(), len(src) * element_size)
+        await conn.rdma_write_cache_async2([desc])
+
+    asyncio.run(run_write())
+    conn.close()
+
+    conn = infinistore.InfinityConnection(config)
+    conn.connect()
+
+    dst = torch.zeros(4096, device="cuda:0", dtype=dtype)
+
+    conn.register_mr(dst.data_ptr(), dst.numel() * dst.element_size())
+
+    async def run_read():
+        desc = infinistore.Desc(key, dst.data_ptr(), len(dst) * element_size)
+        await conn.rdma_read_cache_async2([desc])
+
+    asyncio.run(run_read())
+    assert torch.equal(src_tensor, dst)
+    conn.close()
+
+
+@pytest.mark.parametrize("separated_gpu", [False, True])
+def test_batch_read_write_cache_async2(server, separated_gpu):
+    config = infinistore.ClientConfig(
+        host_addr="127.0.0.1",
+        service_port=92345,
+        link_type=infinistore.LINK_ETHERNET,
+        dev_name=f"{RDMA_DEV[0]}",
+    )
+
+    config.connection_type = infinistore.TYPE_RDMA
+
+    # test if we have multiple GPUs
+    if separated_gpu:
+        if get_gpu_count() >= 2:
+            src_device = "cuda:0"
+            dst_device = "cuda:1"
+        else:
+            # skip if we don't have enough GPUs
+            return
+    else:
+        src_device = "cuda:0"
+        dst_device = "cuda:0"
+
+    conn = infinistore.InfinityConnection(config)
+    conn.connect()
+
+    num_of_blocks = 10
+    block_size = 4096
+    src = [i for i in range(num_of_blocks * block_size)]
+
+    src_tensor = torch.tensor(src, device=src_device, dtype=torch.float32)
+    torch.cuda.synchronize(src_tensor.device)
+
+    async def run():
+        # write/read 3 times
+        for i in range(3):
+            keys = [generate_random_string(num_of_blocks) for i in range(10)]
+            conn.register_mr(
+                src_tensor.data_ptr(), src_tensor.numel() * src_tensor.element_size()
+            )
+
+            # Create write descriptors for async2 API
+            write_descs = []
+            for j in range(num_of_blocks):
+                desc = infinistore.Desc(
+                    keys[j], src_tensor.data_ptr() + j * block_size * 4, block_size * 4
+                )
+                write_descs.append(desc)
+
+            await conn.rdma_write_cache_async2(write_descs)
+
+            dst = torch.zeros(
+                num_of_blocks * block_size, device=dst_device, dtype=torch.float32
+            )
+            conn.register_mr(dst.data_ptr(), dst.numel() * dst.element_size())
+
+            # Create read descriptors for async2 API
+            read_descs = []
+            for j in range(num_of_blocks):
+                desc = infinistore.Desc(
+                    keys[j], dst.data_ptr() + j * block_size * 4, block_size * 4
+                )
+                read_descs.append(desc)
+
+            await conn.rdma_read_cache_async2(read_descs)
+            assert torch.equal(src_tensor.cpu(), dst.cpu())
+
+    asyncio.run(run())
+    conn.close()
+
+
+def test_async2_api_with_mixed_sizes(server):
+    config = infinistore.ClientConfig(
+        host_addr="127.0.0.1",
+        service_port=92345,
+        link_type=infinistore.LINK_ETHERNET,
+        dev_name=f"{RDMA_DEV[0]}",
+        connection_type=infinistore.TYPE_RDMA,
+    )
+    conn = infinistore.InfinityConnection(config)
+
+    # use asyncio
+    async def run():
+        await conn.connect_async()
+
+        # Test with different sized blocks
+        keys = [generate_random_string(5) for _ in range(3)]
+        sizes = [1024, 2048, 4096]
+
+        src_tensors = []
+        dst_tensors = []
+        write_descs = []
+        read_descs = []
+
+        # Create tensors and descriptors for different sizes
+        for i, size in enumerate(sizes):
+            src = torch.randn(size, device="cuda", dtype=torch.float32)
+            dst = torch.zeros(size, device="cuda", dtype=torch.float32)
+
+            src_tensors.append(src)
+            dst_tensors.append(dst)
+
+            write_descs.append(infinistore.Desc(keys[i], src.data_ptr(), size * 4))
+            read_descs.append(infinistore.Desc(keys[i], dst.data_ptr(), size * 4))
+
+        def register_mr():
+            for src, dst in zip(src_tensors, dst_tensors):
+                conn.register_mr(src.data_ptr(), src.numel() * src.element_size())
+                conn.register_mr(dst.data_ptr(), dst.numel() * dst.element_size())
+
+        await asyncio.to_thread(register_mr)
+
+        # Write all blocks
+        await conn.rdma_write_cache_async2(write_descs)
+
+        # Read all blocks
+        await conn.rdma_read_cache_async2(read_descs)
+
+        # Verify data integrity
+        for src, dst in zip(src_tensors, dst_tensors):
+            assert torch.equal(src.cpu(), dst.cpu())
+
+        conn.close()
+
+    asyncio.run(run())
