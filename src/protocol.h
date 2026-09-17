@@ -71,6 +71,8 @@ typedef struct __attribute__((packed)) {
     unsigned int body_size;
 } header_t;
 
+int verify_header(const header_t* header);
+
 typedef struct __attribute__((packed)) rdma_conn_info_t {
     uint32_t qpn;
     uint32_t psn;

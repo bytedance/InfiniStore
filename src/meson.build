@@ -98,3 +98,9 @@ foreach port : ['1', '2']
     )
   endforeach
 endforeach
+
+protocol_test = executable('test_protocol',
+  sources: ['test_protocol.cpp', 'protocol.cpp'] + generated_headers,
+  build_by_default: false,
+)
+test('protocol-header-validation', protocol_test, suite: 'protocol')

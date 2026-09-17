@@ -653,14 +653,6 @@ void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
     buf->len = suggested_size;
 }
 
-int verify_header(header_t *header) {
-    if (header->magic != MAGIC) {
-        return INVALID_REQ;
-    }
-    // TODO: add more checks
-    return 0;
-}
-
 void on_write(uv_write_t *req, int status) {
     if (status < 0) {
         ERROR("Write error {}", uv_strerror(status));
@@ -916,8 +908,14 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
                     // prepare for reading body
                     client->expected_bytes_ = client->header_.body_size;
                     client->bytes_read_ = 0;
-                    client->tcp_recv_buffer_ =
+                    char *new_buffer =
                         (char *)realloc(client->tcp_recv_buffer_, client->expected_bytes_);
+                    if (!new_buffer) {
+                        ERROR("Failed to allocate request buffer");
+                        uv_close((uv_handle_t *)stream, on_close);
+                        goto clean_up;
+                    }
+                    client->tcp_recv_buffer_ = new_buffer;
                     client->state_ = READ_BODY;
                 }
                 break;

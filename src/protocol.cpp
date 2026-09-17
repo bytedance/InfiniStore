@@ -8,6 +8,17 @@ std::unordered_map<char, std::string> op_map = {
     {OP_RDMA_READ, "RDMA_READ"},     {OP_RDMA_WRITE, "RDMA_WRITE"},
     {OP_CHECK_EXIST, "CHECK_EXIST"}, {OP_GET_MATCH_LAST_IDX, "GET_MATCH_LAST_IDX"},
     {OP_DELETE_KEYS, "DELETE_KEYS"}};
+
+int verify_header(const header_t* header) {
+    if (header->magic != MAGIC) {
+        return INVALID_REQ;
+    }
+    if (header->body_size > PROTOCOL_BUFFER_SIZE) {
+        return INVALID_REQ;
+    }
+    return 0;
+}
+
 std::string op_name(char op_code) {
     auto it = op_map.find(op_code);
     if (it != op_map.end()) {
