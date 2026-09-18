@@ -117,11 +117,6 @@ def start_loop(loop):
     loop.run_forever()
 
 
-loop = asyncio.new_event_loop()
-t = threading.Thread(target=start_loop, args=(loop,))
-t.start()
-
-
 def run(args):
     config = infinistore.ClientConfig(
         host_addr=args.server,
@@ -138,6 +133,12 @@ def run(args):
         config.connection_type = infinistore.TYPE_TCP
 
     conn = infinistore.InfinityConnection(config)
+    loop = None
+    t = None
+    if args.rdma:
+        loop = asyncio.new_event_loop()
+        t = threading.Thread(target=start_loop, args=(loop,))
+        t.start()
     try:
         conn.connect()
 
@@ -271,8 +272,9 @@ def run(args):
         assert torch.equal(src_tensor.cpu(), dst_tensor.cpu())
     finally:
         conn.close()
-        loop.call_soon_threadsafe(loop.stop)
-        t.join()
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
+            t.join()
 
 
 if __name__ == "__main__":
