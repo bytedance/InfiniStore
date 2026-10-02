@@ -1,5 +1,6 @@
 #include "rdma.h"
 
+#include <algorithm>
 #include <string>
 
 #include "log.h"
@@ -133,7 +134,8 @@ int open_rdma_device(std::string dev_name, int ib_port, std::string link_type, i
     return 0;
 }
 
-int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev) {
+int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev,
+                      uint32_t max_inline_data, uint32_t max_send_wr) {
     assert(ctx != NULL);
     assert(rdma_dev != NULL);
 
@@ -161,16 +163,24 @@ int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev) {
     qp_init_attr.send_cq = ctx->cq;
     qp_init_attr.recv_cq = ctx->cq;
     qp_init_attr.qp_type = IBV_QPT_RC;  // Reliable Connection
-    qp_init_attr.cap.max_send_wr = MAX_SEND_WR;
+    qp_init_attr.cap.max_send_wr = max_send_wr;
     qp_init_attr.cap.max_recv_wr = MAX_RECV_WR;
     qp_init_attr.cap.max_send_sge = 1;
     qp_init_attr.cap.max_recv_sge = 1;
+    qp_init_attr.cap.max_inline_data = max_inline_data;
 
     ctx->qp = ibv_create_qp(rdma_dev->pd, &qp_init_attr);
+    if (!ctx->qp && max_inline_data) {
+        // the device may not support inline data, try again without it
+        qp_init_attr.cap.max_inline_data = 0;
+        ctx->qp = ibv_create_qp(rdma_dev->pd, &qp_init_attr);
+    }
     if (!ctx->qp) {
         ERROR("Failed to create QP, {}", strerror(errno));
         return -1;
     }
+    // ibv_create_qp writes the granted inline data size back into qp_init_attr
+    ctx->max_inline_data = std::min(qp_init_attr.cap.max_inline_data, max_inline_data);
 
     // Modify QP to INIT state
     if (modify_qp_to_init(ctx, rdma_dev)) {

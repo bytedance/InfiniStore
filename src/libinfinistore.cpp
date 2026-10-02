@@ -203,7 +203,7 @@ int Connection::setup_rdma(client_config_t config) {
         return -1;
     }
 
-    if (init_rdma_context(&ctx_, &rdma_dev_) < 0) {
+    if (init_rdma_context(&ctx_, &rdma_dev_, BF_MAX_INLINE_SEND, CLIENT_MAX_SEND_WR) < 0) {
         ERROR("Failed to initialize RDMA context");
         return -1;
     }
@@ -646,6 +646,10 @@ int Connection::w_rdma_async(const std::vector<std::string> &keys,
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_SIGNALED;
+    // a small request goes in the WQE, so the NIC does not have to read it from memory
+    if (sge.length <= ctx_.max_inline_data) {
+        wr.send_flags |= IBV_SEND_INLINE;
+    }
 
     int ret = ibv_post_send(ctx_.qp, &wr, &bad_wr);
     if (ret) {
@@ -713,6 +717,10 @@ int Connection::r_rdma_async(const std::vector<std::string> &keys,
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_SIGNALED;
+    // a small request goes in the WQE, so the NIC does not have to read it from memory
+    if (sge.length <= ctx_.max_inline_data) {
+        wr.send_flags |= IBV_SEND_INLINE;
+    }
 
     int ret;
     ret = ibv_post_send(ctx_.qp, &wr, &bad_wr);
