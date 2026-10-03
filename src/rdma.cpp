@@ -170,6 +170,11 @@ int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev,
     qp_init_attr.cap.max_inline_data = max_inline_data;
 
     ctx->qp = ibv_create_qp(rdma_dev->pd, &qp_init_attr);
+    if (!ctx->qp && max_inline_data > 64) {
+        // some devices take less inline data (irdma: 101 bytes), try 64
+        qp_init_attr.cap.max_inline_data = 64;
+        ctx->qp = ibv_create_qp(rdma_dev->pd, &qp_init_attr);
+    }
     if (!ctx->qp && max_inline_data) {
         // the device may not support inline data, try again without it
         qp_init_attr.cap.max_inline_data = 0;
@@ -180,7 +185,12 @@ int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev,
         return -1;
     }
     // ibv_create_qp writes the granted inline data size back into qp_init_attr
-    ctx->max_inline_data = std::min(qp_init_attr.cap.max_inline_data, max_inline_data);
+    ctx->max_inline_data = max_inline_data ? qp_init_attr.cap.max_inline_data : 0;
+    struct ibv_device_attr dev_attr;
+    if (ibv_query_device(rdma_dev->ib_ctx, &dev_attr) == 0 &&
+        dev_attr.vendor_id == MELLANOX_VENDOR_ID) {
+        ctx->max_inline_data = std::min<uint32_t>(ctx->max_inline_data, BF_MAX_INLINE_SEND);
+    }
 
     // Modify QP to INIT state
     if (modify_qp_to_init(ctx, rdma_dev)) {
