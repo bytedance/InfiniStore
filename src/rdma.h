@@ -25,14 +25,16 @@ struct rdma_context {
     struct ibv_comp_channel *comp_channel;
     struct ibv_cq *cq;
     struct ibv_qp *qp;
-    uint32_t psn;  // local PSN, randomly generated when creating QP
-    rdma_context() : comp_channel(nullptr), cq(nullptr), qp(nullptr) {}
+    uint32_t psn;              // local PSN, randomly generated when creating QP
+    uint32_t max_inline_data;  // largest send to post inline
+    rdma_context() : comp_channel(nullptr), cq(nullptr), qp(nullptr), max_inline_data(0) {}
 };
 
 int open_rdma_device(std::string dev_name, int ib_port, std::string link_type, int hint_gid_index,
                      struct rdma_device *rdma_dev);
 rdma_conn_info_t get_rdma_conn_info(struct rdma_context *ctx, struct rdma_device *rdma_dev);
-int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev);
+int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev,
+                      uint32_t max_inline_data = 0, uint32_t max_send_wr = MAX_SEND_WR);
 int modify_qp_to_init(struct rdma_context *ctx, struct rdma_device *rdma_dev);
 int modify_qp_to_rts(struct rdma_context *ctx);
 int modify_qp_to_rtr(struct rdma_context *ctx, struct rdma_device *rdma_dev,

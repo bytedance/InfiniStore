@@ -25,12 +25,22 @@ using namespace flatbuffers;
 // model.
 #define MAX_RECV_WR 128
 
+// The client only posts request Sends, one per send buffer, plus one at
+// close. A small queue also keeps larger inline WQEs within mlx5 limits.
+#define CLIENT_MAX_SEND_WR (2 * MAX_RECV_WR)
+
 // how many RDMA write requests can be outstanding, this should be bigger than MAX_WR_BATCH and less
 // than MAX_SEND_WR
 #define MAX_RDMA_OPS_WR 8000
 
 // every MAX_WR_BATCH RDMA write requests will have a RDMA_SIGNAL
 #define MAX_WR_BATCH 32
+
+// Inline size the client asks for, and on Mellanox/NVIDIA NICs the largest
+// request sent inline: 256 - 16 (ctrl) - 4 (inline header), the most that
+// fits the 256-byte BlueFlame buffer of mlx5 NICs.
+#define BF_MAX_INLINE_SEND (256 - 16 - 4)
+#define MELLANOX_VENDOR_ID 0x02c9
 
 #define MAGIC 0xdeadbeef
 #define MAGIC_SIZE 4

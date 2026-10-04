@@ -1,5 +1,6 @@
 #include "rdma.h"
 
+#include <algorithm>
 #include <string>
 
 #include "log.h"
@@ -133,7 +134,34 @@ int open_rdma_device(std::string dev_name, int ib_port, std::string link_type, i
     return 0;
 }
 
-int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev) {
+// The verbs API cannot report the inline data limit. Devices whose kernel driver has a fixed limit
+// try it first: Intel irdma 216, 101 or 48 depending on the generation (101 on the E810, 48 on the
+// X722; drivers/infiniband/hw/irdma/ig3rdma_hw.h, user.h, i40iw_hw.h), Alibaba erdma 96
+// (drivers/infiniband/hw/erdma/erdma_verbs.h). Other devices start at the size asked for, and any
+// refused size steps down by INLINE_DATA_STEP until one is accepted. libfabric's verbs provider
+// also probes the limit (vrb_find_max_inline()).
+static const struct {
+    uint32_t vendor_id;
+    uint32_t max_inline;
+} known_inline_limits[] = {{0x8086, 216}, {0x8086, 101}, {0x8086, 48}, {0x1ded, 96}};
+static const uint32_t INLINE_DATA_STEP = 16;
+
+// Inline size to request: on the first try, size capped at the vendor's first known limit; after a
+// refusal, the vendor's next smaller known limit, else one step smaller.
+static uint32_t inline_data_to_request(uint32_t vendor_id, uint32_t size, bool refused) {
+    for (const auto &known : known_inline_limits) {
+        if (known.vendor_id == vendor_id && (!refused || known.max_inline < size)) {
+            return std::min(known.max_inline, size);
+        }
+    }
+    if (refused) {
+        size = size > INLINE_DATA_STEP ? size - INLINE_DATA_STEP : 0;
+    }
+    return size;
+}
+
+int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev,
+                      uint32_t max_inline_data, uint32_t max_send_wr) {
     assert(ctx != NULL);
     assert(rdma_dev != NULL);
 
@@ -157,19 +185,33 @@ int init_rdma_context(struct rdma_context *ctx, struct rdma_device *rdma_dev) {
     }
 
     // Create Queue Pair
+    struct ibv_device_attr dev_attr;
+    uint32_t vendor_id = ibv_query_device(rdma_dev->ib_ctx, &dev_attr) ? 0 : dev_attr.vendor_id;
+    uint32_t inline_size = inline_data_to_request(vendor_id, max_inline_data, false);
     struct ibv_qp_init_attr qp_init_attr = {};
     qp_init_attr.send_cq = ctx->cq;
     qp_init_attr.recv_cq = ctx->cq;
     qp_init_attr.qp_type = IBV_QPT_RC;  // Reliable Connection
-    qp_init_attr.cap.max_send_wr = MAX_SEND_WR;
+    qp_init_attr.cap.max_send_wr = max_send_wr;
     qp_init_attr.cap.max_recv_wr = MAX_RECV_WR;
     qp_init_attr.cap.max_send_sge = 1;
     qp_init_attr.cap.max_recv_sge = 1;
+    qp_init_attr.cap.max_inline_data = inline_size;
 
     ctx->qp = ibv_create_qp(rdma_dev->pd, &qp_init_attr);
+    while (!ctx->qp && inline_size > 0) {
+        inline_size = inline_data_to_request(vendor_id, inline_size, true);
+        qp_init_attr.cap.max_inline_data = inline_size;
+        ctx->qp = ibv_create_qp(rdma_dev->pd, &qp_init_attr);
+    }
     if (!ctx->qp) {
         ERROR("Failed to create QP, {}", strerror(errno));
         return -1;
+    }
+    // ibv_create_qp writes the granted inline data size back into qp_init_attr
+    ctx->max_inline_data = max_inline_data ? qp_init_attr.cap.max_inline_data : 0;
+    if (vendor_id == MELLANOX_VENDOR_ID) {
+        ctx->max_inline_data = std::min<uint32_t>(ctx->max_inline_data, BF_MAX_INLINE_SEND);
     }
 
     // Modify QP to INIT state
